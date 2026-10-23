@@ -1,0 +1,30 @@
+{
+  "dock_apps": [
+    "com.netflix.ninja",
+    "com.amazon.amazonvideo.livingroom",
+    "com.google.android.youtube.tv",
+    "in.startv.hotstar"
+  ],
+  "hidden_apps": [
+    "com.mediatek.wwtv.tvcenter",
+    "com.mitv.gallery",
+    "com.android.tv.settings"
+  ],
+  "live_tv_package": "",
+  "app_keys": [
+    "190:com.google.android.youtube.tv"
+  ],
+  "show_inputs_pill": false,
+  "icon_only_buttons": true,
+  "wifi_label_width": 0,
+  "sky_intensity": 60,
+  "tile_menu": true,
+  "top_menu": true,
+  "dock_even_padding": true,
+  "columns": 4,
+  "rows_below_dock": 0,
+  "reduced_motion": false,
+  "background_color": "#000000",
+  "wallpaper": false,
+  "greeting_name": "Gean"
+}

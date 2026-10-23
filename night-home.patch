@@ -1,0 +1,2193 @@
+diff --git a/launcher/app/src/main/AndroidManifest.xml b/launcher/app/src/main/AndroidManifest.xml
+index 4cee7a6..ef1437a 100644
+--- a/launcher/app/src/main/AndroidManifest.xml
++++ b/launcher/app/src/main/AndroidManifest.xml
+@@ -9,6 +9,8 @@
+ 
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
++    <!-- meu-chromecast (ADR-0006): only for the current temperature from api.open-meteo.com (WeatherClient). -->
++    <uses-permission android:name="android.permission.INTERNET" />
+     <!-- Needed since Android 10 to read the Wi-Fi network name for the network pill. Never requested at
+          runtime: build-and-install grants it with pm grant, so lint's Android 12 "ask for COARSE with
+          FINE" rule does not apply here. -->
+diff --git a/launcher/app/src/main/java/com/gathin/tvhome/AppAdapter.java b/launcher/app/src/main/java/com/gathin/tvhome/AppAdapter.java
+index ea00306..7783f77 100644
+--- a/launcher/app/src/main/java/com/gathin/tvhome/AppAdapter.java
++++ b/launcher/app/src/main/java/com/gathin/tvhome/AppAdapter.java
+@@ -209,6 +209,14 @@ public class AppAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+     /** Tile names and bundled banners that replace the app's own (config.xml, app_labels and app_banners). */
+     private final Map<String, String> appLabels, appBanners;
+     private final List<Entry> items = new ArrayList<>();
++    /** meu-chromecast: card style and bigger cards chosen in the gear's Theme and Options panels. */
++    private HomeLook look = HomeLook.from(Collections.emptyMap());
++    /** How much "Bigger cards" grows a tile, before the column's room caps it (HomeLook.boostedTileWidthPx). */
++    static final float BIGGER_BOOST = 1.1f;
++
++    void setLook(HomeLook look) {
++        this.look = look;
++    }
+ 
+     AppAdapter(Context ctx, TileListener listener, int dockSize, Config cfg) {
+         this.ctx = ctx;
+@@ -285,7 +293,7 @@ public class AppAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+             if (banner == null) banner = loadBanner(pm, ri);
+             // The icon is only drawn (and sampled for the glow) when there is no banner, so a tile with a
+             // banner skips loading and decoding it.
+-            Drawable icon = banner == null ? ri.loadIcon(pm) : null;
++            Drawable icon = banner == null || look.simpleTiles() ? ri.loadIcon(pm) : null;
+             if (card != null) {
+                 fresh.add(new Entry(Entry.CARD, label, component, banner, icon, card.caption, card.accent));
+             } else {
+@@ -385,7 +393,9 @@ public class AppAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+         float density = parent.getResources().getDisplayMetrics().density;
+         int width = parent.getWidth() > 0 ? parent.getWidth() : parent.getMeasuredWidth();
+         int inner = width - parent.getPaddingLeft() - parent.getPaddingRight();
+-        int w = tileWidthPx(inner, parent.getHeight(), dockSize, rowsBelowDock, dockTitle, dockRow, density), h = tileHeightPx(w);
++        int w = tileWidthPx(inner, parent.getHeight(), dockSize, rowsBelowDock, dockTitle, dockRow, density);
++        w = HomeLook.boostedTileWidthPx(w, inner, dockSize, density, look.biggerCards ? BIGGER_BOOST : 1f);
++        int h = tileHeightPx(w);
+         View card = v.findViewById(R.id.card);
+         ViewGroup.LayoutParams cardLp = card.getLayoutParams();
+         cardLp.width = w;
+@@ -450,6 +460,7 @@ public class AppAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+             h.label.setText(e.label);
+             h.label.setVisibility(View.VISIBLE);
+         }
++        if (look.simpleTiles()) LookTiles.bind(h, e, ambientColorAt(position), look, ctx.getResources().getDisplayMetrics().density);
+         h.card.setOnClickListener(v -> launch(e));
+         h.card.setOnLongClickListener(v -> {
+             if (tileMenu) {
+@@ -687,6 +698,9 @@ public class AppAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+         /** Alpha of the name while the tile is not focused (always_show_names). */
+         final float restNameAlpha;
+         final boolean overshoot;
++        /** meu-chromecast Night/Glass fill and its colours at rest and focused (LookTiles); null for Classic. */
++        android.graphics.drawable.GradientDrawable lookFill;
++        int lookRest, lookFocus;
+ 
+         Holder(View v, TileListener listener, boolean animations, boolean advancedEffects,
+                boolean reducedMotion, float restNameAlpha, boolean overshoot) {
+@@ -722,6 +736,7 @@ public class AppAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+             });
+ 
+             card.setOnFocusChangeListener((view, focused) -> {
++                if (lookFill != null) lookFill.setColor(focused ? lookFocus : lookRest);
+                 view.animate().cancel();
+                 banner.animate().cancel();
+                 name.animate().cancel();
+diff --git a/launcher/app/src/main/java/com/gathin/tvhome/DockDecoration.java b/launcher/app/src/main/java/com/gathin/tvhome/DockDecoration.java
+index 5fef6e9..cc5489f 100644
+--- a/launcher/app/src/main/java/com/gathin/tvhome/DockDecoration.java
++++ b/launcher/app/src/main/java/com/gathin/tvhome/DockDecoration.java
+@@ -49,6 +49,11 @@ public class DockDecoration extends RecyclerView.ItemDecoration {
+         edge.setColor(lightGlass ? 0x38FFFFFF : translucent ? 0x26FFFFFF : 0x1FFFFFFF);
+     }
+ 
++    /** meu-chromecast backgrounds: the plain band in another colour (Midnight's navy), keeping its opacity. */
++    void setBandRgb(int rgb) {
++        band.setColor((band.getColor() & 0xFF000000) | (rgb & 0xFFFFFF));
++    }
++
+     /** Concentric corners: the band's radius is the tiles' radius plus the band's padding around them. */
+     static float radiusPx(float tileRadiusPx, float paddingPx) {
+         return tileRadiusPx + paddingPx;
+diff --git a/launcher/app/src/main/java/com/gathin/tvhome/GlassView.java b/launcher/app/src/main/java/com/gathin/tvhome/GlassView.java
+index 33593c8..87b97d3 100644
+--- a/launcher/app/src/main/java/com/gathin/tvhome/GlassView.java
++++ b/launcher/app/src/main/java/com/gathin/tvhome/GlassView.java
+@@ -58,6 +58,20 @@ public class GlassView extends View {
+         invalidate();
+     }
+ 
++    /** meu-chromecast Night/Glass: only an opaque ring of this colour, flush around the card; 0 restores the glass. */
++    private int ringColor;
++    private float ringWidth;
++    private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
++
++    void setRing(int argb, float widthPx) {
++        ringColor = argb;
++        ringWidth = widthPx;
++        ring.setStyle(Paint.Style.STROKE);
++        ring.setStrokeWidth(widthPx);
++        ring.setColor(argb);
++        invalidate();
++    }
++
+     void setRadius(float px) {
+         radius = px;
+         invalidate();
+@@ -74,6 +88,11 @@ public class GlassView extends View {
+     protected void onDraw(Canvas canvas) {
+         float inset = 6f * density;   // room for the glow
+         rect.set(inset, inset, getWidth() - inset, getHeight() - inset);
++        if (ringColor != 0) {
++            float o = ringWidth / 2f;
++            canvas.drawRoundRect(rect.left - o, rect.top - o, rect.right + o, rect.bottom + o, radius + o, radius + o, ring);
++            return;
++        }
+ 
+         // Outer glow: thin rings across the inset, each a little fainter, so it fades out smoothly. Three wide
+         // strokes left visible bands once the glow took an app's colour at a stronger alpha. The hardware layer
+diff --git a/launcher/app/src/main/java/com/gathin/tvhome/HomeLook.java b/launcher/app/src/main/java/com/gathin/tvhome/HomeLook.java
+new file mode 100644
+index 0000000..66698c7
+--- /dev/null
++++ b/launcher/app/src/main/java/com/gathin/tvhome/HomeLook.java
+@@ -0,0 +1,216 @@
++package com.gathin.tvhome;
++
++import java.util.HashMap;
++import java.util.Map;
++
++/**
++ * The look chosen on the TV from the gear's Theme and Options panels (meu-chromecast fork): card style,
++ * background and the header switches. Plain Java, so the rules are unit-tested; LookPrefs stores it.
++ * Kept in its own preferences file, so a theme push (Config.syncThemeChoices) never clears it.
++ */
++final class HomeLook {
++
++    enum Cards {
++        CLASSIC("classic"), NIGHT("night"), GLASS("glass");
++
++        final String id;
++
++        Cards(String id) {
++            this.id = id;
++        }
++    }
++
++    enum Background {
++        SKY("sky", 0xFF000000, -1, true, 1f, -1, 0x141416, 0xFFFFFFFF, 0xC7FFFFFF),
++        GRAPHITE("graphite", 0xFF0A0A0B, 0, false, 0f, 100, 0x141416, 0xFFF2F2F2, 0xFFA1A1A6),
++        MIDNIGHT("midnight", 0xFF060A14, 0, true, 0.48f, 60, 0x1C2234, 0xFFEEF1F8, 0xFFA3ACC2);
++
++        final String id;
++        final int color;
++        /** sky_intensity for this background; -1 keeps the theme's. */
++        final int sky;
++        final boolean glow;
++        /** Ambient glow strength relative to the launcher's (1 = as before). */
++        final float glowStrength;
++        /** Dock band opacity in percent; -1 keeps the theme's. */
++        final int dockOpacity;
++        final int dockRgb;
++        final int primaryText, secondaryText;
++
++        Background(String id, int color, int sky, boolean glow, float glowStrength, int dockOpacity, int dockRgb,
++                   int primaryText, int secondaryText) {
++            this.id = id;
++            this.color = color;
++            this.sky = sky;
++            this.glow = glow;
++            this.glowStrength = glowStrength;
++            this.dockOpacity = dockOpacity;
++            this.dockRgb = dockRgb;
++            this.primaryText = primaryText;
++            this.secondaryText = secondaryText;
++        }
++    }
++
++    static final String KEY_CARDS = "cards", KEY_BACKGROUND = "background", KEY_GREETING = "greeting",
++            KEY_BIG_CLOCK = "big_clock", KEY_SMALL_CLOCK = "small_clock", KEY_DATE = "date",
++            KEY_BIGGER_CARDS = "bigger_cards", KEY_HEADER_TEMPERATURE = "header_temperature",
++            KEY_WEATHER_LINE = "weather_line";
++
++    /** Name on a Night tile and the dimmer text of the Night look: grey instead of white in a dark room. */
++    static final int NIGHT_NAME = 0xFFD8D8DC, NIGHT_TEXT = 0xFFCFCFD4, NIGHT_SECONDARY = 0xB8CFCFD4;
++    /** Focus ring of Night and Glass: grey, opaque, flush with the card (white glares in a dark room). */
++    static final int GREY_RING = 0xFFA8A8B0;
++
++    final Cards cards;
++    final Background background;
++    final boolean greeting, bigClock, smallClock, date, biggerCards, headerTemperature, weatherLine;
++
++    private HomeLook(Cards cards, Background background, boolean greeting, boolean bigClock, boolean smallClock,
++                     boolean date, boolean biggerCards, boolean headerTemperature, boolean weatherLine) {
++        this.cards = cards;
++        this.background = background;
++        this.greeting = greeting;
++        this.bigClock = bigClock;
++        this.smallClock = smallClock;
++        this.date = date;
++        this.biggerCards = biggerCards;
++        this.headerTemperature = headerTemperature;
++        this.weatherLine = weatherLine;
++    }
++
++    /** The saved choices (SharedPreferences.getAll()); a missing, unknown or mistyped value keeps its default. */
++    static HomeLook from(Map<String, ?> saved) {
++        Cards cards = Cards.CLASSIC;
++        Object c = saved.get(KEY_CARDS);
++        for (Cards v : Cards.values()) if (v.id.equals(c)) cards = v;
++        Background background = Background.SKY;
++        Object b = saved.get(KEY_BACKGROUND);
++        for (Background v : Background.values()) if (v.id.equals(b)) background = v;
++        return new HomeLook(cards, background, bool(saved, KEY_GREETING, true), bool(saved, KEY_BIG_CLOCK, false),
++                bool(saved, KEY_SMALL_CLOCK, true), bool(saved, KEY_DATE, true), bool(saved, KEY_BIGGER_CARDS, false),
++                bool(saved, KEY_HEADER_TEMPERATURE, false), bool(saved, KEY_WEATHER_LINE, true));
++    }
++
++    private static boolean bool(Map<String, ?> saved, String key, boolean fallback) {
++        Object v = saved.get(key);
++        return v instanceof Boolean ? (Boolean) v : fallback;
++    }
++
++    Map<String, Object> toMap() {
++        Map<String, Object> m = new HashMap<>();
++        m.put(KEY_CARDS, cards.id);
++        m.put(KEY_BACKGROUND, background.id);
++        m.put(KEY_GREETING, greeting);
++        m.put(KEY_BIG_CLOCK, bigClock);
++        m.put(KEY_SMALL_CLOCK, smallClock);
++        m.put(KEY_DATE, date);
++        m.put(KEY_BIGGER_CARDS, biggerCards);
++        m.put(KEY_HEADER_TEMPERATURE, headerTemperature);
++        m.put(KEY_WEATHER_LINE, weatherLine);
++        return m;
++    }
++
++    /** This look with one choice changed; every other choice stays as it is. */
++    HomeLook with(String key, Object value) {
++        Map<String, Object> m = toMap();
++        m.put(key, value);
++        return from(m);
++    }
++
++    boolean simpleTiles() {
++        return cards != Cards.CLASSIC;
++    }
++
++    boolean showsHeroTitle(boolean dockTitle) {
++        return dockTitle && cards == Cards.CLASSIC;
++    }
++
++    boolean ambientGlow(boolean themeGlow) {
++        return themeGlow && background.glow && cards != Cards.NIGHT;
++    }
++
++    /** 0 keeps the launcher's glass highlight. */
++    int focusRingColor() {
++        return simpleTiles() ? GREY_RING : 0;
++    }
++
++    int primaryText() {
++        return cards == Cards.NIGHT ? NIGHT_TEXT : background.primaryText;
++    }
++
++    int secondaryText() {
++        return cards == Cards.NIGHT ? NIGHT_SECONDARY : background.secondaryText;
++    }
++
++    /** "h:mm a · EEEE d MMMM" for the header's small line, with only the parts that are switched on. */
++    static String smallLinePattern(String timePattern, String datePattern, boolean time, boolean date) {
++        if (time && date) return timePattern + " '·' " + datePattern;
++        if (time) return timePattern;
++        return date ? datePattern : "";
++    }
++
++    /** Bigger cards: the tile grows by {@code boost}, but never past what its column leaves for the focus zoom. */
++    static int boostedTileWidthPx(int tileWidthPx, int innerWidthPx, int columns, float density, float boost) {
++        if (boost <= 1f || columns <= 0 || innerWidthPx <= 0) return tileWidthPx;
++        // 8dp instead of the usual 12dp between zoomed neighbours: the room bigger cards grow into.
++        int fit = (int) ((innerWidthPx / columns - 8 * density) / AppAdapter.FOCUS_SCALE);
++        return Math.max(tileWidthPx, Math.min(Math.round(tileWidthPx * boost), fit));
++    }
++
++    /** The app's colour as a deep, muted tone for a Night tile, dark enough that NIGHT_NAME reads on it (4.5:1). */
++    static int nightTone(int argb) {
++        float[] hsl = hsl(argb);
++        float s = Math.min(hsl[1], 0.5f);
++        float l = 0.22f;
++        int tone = fromHsl(hsl[0], s, l);
++        while (contrast(tone, NIGHT_NAME) < 4.5 && l > 0.04f) {
++            l -= 0.02f;
++            tone = fromHsl(hsl[0], s, l);
++        }
++        return tone;
++    }
++
++    static double luminance(int argb) {
++        return 0.2126 * channel((argb >> 16) & 0xFF) + 0.7152 * channel((argb >> 8) & 0xFF) + 0.0722 * channel(argb & 0xFF);
++    }
++
++    private static double channel(int c) {
++        double v = c / 255.0;
++        return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
++    }
++
++    static double contrast(int a, int b) {
++        double la = luminance(a), lb = luminance(b);
++        return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
++    }
++
++    private static float[] hsl(int argb) {
++        float r = ((argb >> 16) & 0xFF) / 255f, g = ((argb >> 8) & 0xFF) / 255f, b = (argb & 0xFF) / 255f;
++        float max = Math.max(r, Math.max(g, b)), min = Math.min(r, Math.min(g, b));
++        float l = (max + min) / 2f, h = 0f, s = 0f;
++        float d = max - min;
++        if (d > 0f) {
++            s = d / (1f - Math.abs(2f * l - 1f));
++            if (max == r) h = ((g - b) / d) % 6f;
++            else if (max == g) h = (b - r) / d + 2f;
++            else h = (r - g) / d + 4f;
++            h *= 60f;
++            if (h < 0) h += 360f;
++        }
++        return new float[]{h, s, l};
++    }
++
++    private static int fromHsl(float h, float s, float l) {
++        float c = (1f - Math.abs(2f * l - 1f)) * s;
++        float x = c * (1f - Math.abs((h / 60f) % 2f - 1f));
++        float m = l - c / 2f;
++        float r, g, b;
++        if (h < 60) { r = c; g = x; b = 0; }
++        else if (h < 120) { r = x; g = c; b = 0; }
++        else if (h < 180) { r = 0; g = c; b = x; }
++        else if (h < 240) { r = 0; g = x; b = c; }
++        else if (h < 300) { r = x; g = 0; b = c; }
++        else { r = c; g = 0; b = x; }
++        return 0xFF000000 | Math.round((r + m) * 255) << 16 | Math.round((g + m) * 255) << 8 | Math.round((b + m) * 255);
++    }
++}
+diff --git a/launcher/app/src/main/java/com/gathin/tvhome/IconInk.java b/launcher/app/src/main/java/com/gathin/tvhome/IconInk.java
+new file mode 100644
+index 0000000..5bf7cb6
+--- /dev/null
++++ b/launcher/app/src/main/java/com/gathin/tvhome/IconInk.java
+@@ -0,0 +1,119 @@
++package com.gathin.tvhome;
++
++/**
++ * meu-chromecast Night/Glass: an app icon reduced to its drawing in one colour, without the tile-shaped square many
++ * icons sit on. Works on raw ARGB pixels (plain Java, unit-tested); LookTiles renders and caches the result.
++ */
++final class IconInk {
++    private IconInk() {
++    }
++
++    /**
++     * The icon's solid background colour, read on a ring just inside its edges, or 0 when that ring is mostly
++     * transparent or not one colour (then nothing is removed).
++     */
++    static int background(int[] argb, int w, int h) {
++        int left = 0, top = 0, right = w - 1, bottom = h - 1;
++        int[] points = ring(w, h);
++        int n = points.length / 2;
++        int[] samples = new int[n];
++        for (int i = 0; i < n; i++) samples[i] = argb[points[2 * i + 1] * w + points[2 * i]];
++        // The colour most of the ring agrees on: a logo may cross part of the ring (UniTV's big circle does).
++        int best = 0, bestVotes = 0;
++        for (int candidate : samples) {
++            if ((candidate >>> 24) < 200) continue;
++            int votes = 0;
++            for (int other : samples) if ((other >>> 24) >= 200 && distance(other, candidate) <= 0.08) votes++;
++            if (votes > bestVotes) {
++                best = candidate;
++                bestVotes = votes;
++            }
++        }
++        if (bestVotes * 10 < n * 6) return 0;
++        // A plain glyph with no backdrop fills its own bounds too: it is a background only if a drawing sits on it.
++        int drawing = 0, area = 0;
++        for (int y = top; y <= bottom; y++) {
++            for (int x = left; x <= right; x++) {
++                int p = argb[y * w + x];
++                if ((p >>> 24) < 200) continue;
++                area++;
++                if (distance(p, best) > 0.18) drawing++;
++            }
++        }
++        return drawing * 50 >= area ? 0xFF000000 | best : 0;
++    }
++
++    /** 0-255 per pixel: how much of it is drawing rather than background. */
++    static int[] alpha(int[] argb, int w, int h) {
++        int bg = background(argb, w, h);
++        int[] out = new int[argb.length];
++        for (int i = 0; i < argb.length; i++) {
++            int p = argb[i];
++            int a = p >>> 24;
++            if (bg != 0) {
++                double d = distance(p, bg);
++                double ink = Math.max(0, Math.min(1, (d - 0.10) / 0.25));
++                a = (int) Math.round(a * ink);
++            }
++            out[i] = a;
++        }
++        return out;
++    }
++
++    /** {left, top, right, bottom} of the drawing (alpha above a faint speck), inclusive; null when there is none. */
++    static int[] bounds(int[] alpha, int w, int h) {
++        int left = w, top = h, right = -1, bottom = -1;
++        for (int y = 0; y < h; y++) {
++            for (int x = 0; x < w; x++) {
++                if (alpha[y * w + x] < 40) continue;
++                left = Math.min(left, x);
++                top = Math.min(top, y);
++                right = Math.max(right, x);
++                bottom = Math.max(bottom, y);
++            }
++        }
++        return right < left ? null : new int[]{left, top, right, bottom};
++    }
++
++    /**
++     * Where to draw a drawing with these bounds so its longer side is {@code fraction} of a {@code size} box, centred,
++     * shape kept: every app's drawing then reads the same size, whatever margin its icon had.
++     */
++    static float[] fit(int[] bounds, int size, float fraction) {
++        float w = bounds[2] - bounds[0] + 1, h = bounds[3] - bounds[1] + 1;
++        float scale = size * fraction / Math.max(w, h);
++        float dw = w * scale, dh = h * scale;
++        float left = (size - dw) / 2f, top = (size - dh) / 2f;
++        return new float[]{left, top, left + dw, top + dh};
++    }
++
++    static int[] paint(int[] alpha, int rgb) {
++        int[] out = new int[alpha.length];
++        for (int i = 0; i < alpha.length; i++) out[i] = alpha[i] << 24 | (rgb & 0xFFFFFF);
++        return out;
++    }
++
++    /** RGB distance, 0 (same) to 1 (black against white). */
++    private static double distance(int a, int b) {
++        int dr = ((a >> 16) & 0xFF) - ((b >> 16) & 0xFF);
++        int dg = ((a >> 8) & 0xFF) - ((b >> 8) & 0xFF);
++        int db = (a & 0xFF) - (b & 0xFF);
++        return Math.sqrt(dr * dr + dg * dg + db * db) / 441.67;
++    }
++
++    /** Close to the edge (6%): past rounded corners, before a logo that fills most of the icon (UniTV's does). */
++    private static int[] ring(int w, int h) {
++        int x0 = Math.round(w * 0.06f), y0 = Math.round(h * 0.06f), x1 = w - 1 - x0, y1 = h - 1 - y0;
++        int steps = 8;
++        int[] pts = new int[steps * 4 * 2];
++        int k = 0;
++        for (int i = 0; i < steps; i++) {
++            int x = x0 + (x1 - x0) * i / steps, y = y0 + (y1 - y0) * i / steps;
++            pts[k++] = x; pts[k++] = y0;
++            pts[k++] = x; pts[k++] = y1;
++            pts[k++] = x0; pts[k++] = y;
++            pts[k++] = x1; pts[k++] = y;
++        }
++        return pts;
++    }
++}
+diff --git a/launcher/app/src/main/java/com/gathin/tvhome/LookHeader.java b/launcher/app/src/main/java/com/gathin/tvhome/LookHeader.java
+new file mode 100644
+index 0000000..6244692
+--- /dev/null
++++ b/launcher/app/src/main/java/com/gathin/tvhome/LookHeader.java
+@@ -0,0 +1,155 @@
++package com.gathin.tvhome;
++
++import android.app.Activity;
++import android.graphics.Typeface;
++import android.text.format.DateFormat;
++import android.util.TypedValue;
++import android.view.View;
++import android.view.ViewGroup;
++import android.widget.LinearLayout;
++import android.widget.TextClock;
++import android.widget.TextView;
++
++import java.util.Locale;
++
++/**
++ * meu-chromecast header, built from the Options switches: the greeting (large, or small over a big clock), the
++ * big clock, and one small line with the small clock and the date. Rearranges activity_main.xml's own views and
++ * adds the small line in code, so the layout file stays as upstream has it.
++ */
++final class LookHeader {
++    private LookHeader() {
++    }
++
++    /** The small line and the temperature at its end, for showWeather. */
++    static final class Views {
++        final TextClock line;
++        final TextView separator, temperature;
++        final android.widget.ImageView icon;
++        final View row;
++
++        Views(View row, TextClock line, TextView separator, android.widget.ImageView icon, TextView temperature) {
++            this.row = row;
++            this.line = line;
++            this.separator = separator;
++            this.icon = icon;
++            this.temperature = temperature;
++        }
++    }
++
++    static Views apply(Activity a, HomeLook look) {
++        TextView greeting = a.findViewById(R.id.greeting);
++        TextClock clock = a.findViewById(R.id.clock);
++        TextClock ampm = a.findViewById(R.id.ampm);
++        LinearLayout block = a.findViewById(R.id.leftBlock);
++        ViewGroup clockRow = (ViewGroup) clock.getParent();
++        Typeface light = font(a, R.font.outfit_light), extraLight = font(a, R.font.outfit_extralight);
++        int primary = look.primaryText(), secondary = look.secondaryText();
++
++        if (!look.greeting) {
++            greeting.setVisibility(View.GONE);
++        } else if (!look.bigClock) {
++            greeting.setAllCaps(false);
++            greeting.setTextSize(TypedValue.COMPLEX_UNIT_SP, 32f);
++            greeting.setLetterSpacing(-0.01f);
++            if (light != null) greeting.setTypeface(light);
++            greeting.setTextColor(primary);
++        } else {
++            greeting.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
++            greeting.setTextColor(secondary);
++        }
++
++        // The date moves to the small line: the row keeps only the big clock and its AM/PM.
++        for (int i = 2; i < clockRow.getChildCount(); i++) clockRow.getChildAt(i).setVisibility(View.GONE);
++        clockRow.setVisibility(look.bigClock ? View.VISIBLE : View.GONE);
++        clock.setTextSize(TypedValue.COMPLEX_UNIT_SP, 60f);
++        if (extraLight != null) clock.setTypeface(extraLight);
++        clock.setTextColor(primary);
++        ampm.setTextColor(secondary);
++
++        Locale locale = a.getResources().getConfiguration().getLocales().get(0);
++        String datePattern = DateFormat.getBestDateTimePattern(locale, look.bigClock ? "EEEdMMM" : "EEEEdMMMM");
++        String twelve = HomeLook.smallLinePattern(DateFormat.getBestDateTimePattern(locale, "hmma"), datePattern,
++                look.smallClock, look.date);
++        String twentyFour = HomeLook.smallLinePattern(DateFormat.getBestDateTimePattern(locale, "Hm"), datePattern,
++                look.smallClock, look.date);
++        TextClock line = new TextClock(a);
++        line.setFormat12Hour(twelve);
++        line.setFormat24Hour(twentyFour);
++        line.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
++        if (light != null) line.setTypeface(light);
++        line.setTextColor(secondary);
++        line.setSingleLine(true);
++        line.setVisibility(twelve.isEmpty() ? View.GONE : View.VISIBLE);
++
++        // The temperature sits at the end of the small line, in the same size and colour (Phase 2, ADR-0006).
++        float density = a.getResources().getDisplayMetrics().density;
++        LinearLayout row = new LinearLayout(a);
++        row.setOrientation(LinearLayout.HORIZONTAL);
++        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
++        row.addView(line);
++        TextView separator = smallText(a, light, secondary, " · ");
++        row.addView(separator);
++        android.widget.ImageView icon = new android.widget.ImageView(a);
++        icon.setImageTintList(android.content.res.ColorStateList.valueOf(secondary));
++        int iconSize = Math.round(20 * density);
++        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(iconSize, iconSize);
++        ilp.setMarginEnd(Math.round(4 * density));
++        row.addView(icon, ilp);
++        TextView temperature = smallText(a, light, secondary, "");
++        row.addView(temperature);
++        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
++                ViewGroup.LayoutParams.WRAP_CONTENT);
++        lp.topMargin = Math.round(6 * density);
++        lp.setMarginStart(Math.round(2 * density));
++        block.addView(row, lp);
++        Views views = new Views(row, line, separator, icon, temperature);
++        showWeather(views, look, null);
++        return views;
++    }
++
++    /** Shows or hides the temperature at the end of the small line; null hides it (no fresh reading). */
++    static void showWeather(Views v, HomeLook look, WeatherNow now) {
++        boolean weather = look.headerTemperature && now != null;
++        boolean line = v.line.getVisibility() == View.VISIBLE;
++        v.separator.setVisibility(weather && line ? View.VISIBLE : View.GONE);
++        v.icon.setVisibility(weather ? View.VISIBLE : View.GONE);
++        v.temperature.setVisibility(weather ? View.VISIBLE : View.GONE);
++        if (weather) {
++            v.icon.setImageResource(iconRes(now.icon()));
++            v.temperature.setText(now.temperature + "°");
++        }
++        v.row.setVisibility(weather || line ? View.VISIBLE : View.GONE);
++    }
++
++    static int iconRes(WeatherNow.Icon icon) {
++        switch (icon) {
++            case SUN: return R.drawable.ic_meu_weather_sun;
++            case MOON: return R.drawable.ic_meu_weather_moon;
++            case CLOUD_SUN: return R.drawable.ic_meu_weather_cloud_sun;
++            case CLOUD_MOON: return R.drawable.ic_meu_weather_cloud_moon;
++            case FOG: return R.drawable.ic_meu_weather_fog;
++            case RAIN: return R.drawable.ic_meu_weather_rain;
++            case STORM: return R.drawable.ic_meu_weather_storm;
++            default: return R.drawable.ic_meu_weather_cloud;
++        }
++    }
++
++    static TextView smallText(Activity a, Typeface font, int color, String text) {
++        TextView t = new TextView(a);
++        t.setText(text);
++        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
++        if (font != null) t.setTypeface(font);
++        t.setTextColor(color);
++        t.setSingleLine(true);
++        return t;
++    }
++
++    static Typeface font(Activity a, int res) {
++        try {
++            return a.getResources().getFont(res);   // API 26+, the launcher's minSdk
++        } catch (RuntimeException e) {
++            return null;
++        }
++    }
++}
+diff --git a/launcher/app/src/main/java/com/gathin/tvhome/LookMenus.java b/launcher/app/src/main/java/com/gathin/tvhome/LookMenus.java
+new file mode 100644
+index 0000000..43d98fe
+--- /dev/null
++++ b/launcher/app/src/main/java/com/gathin/tvhome/LookMenus.java
+@@ -0,0 +1,56 @@
++package com.gathin.tvhome;
++
++import android.content.res.ColorStateList;
++import android.graphics.drawable.GradientDrawable;
++import android.graphics.drawable.StateListDrawable;
++import android.view.View;
++import android.widget.ImageView;
++import android.widget.TextView;
++
++/**
++ * meu-chromecast Night: the gear and the menu rows lose their solid white focus. A translucent film and light grey
++ * text mark the focused item instead, so nothing glares in a dark room.
++ */
++final class LookMenus {
++    private static final int FOCUS_FILM = 0x24FFFFFF, REST_FILM = 0x14FFFFFF, EDGE = 0x24FFFFFF;
++    private static final int FOCUSED_TEXT = 0xFFE2E2E6, TEXT = 0xFFCFCFD4, DIM = 0x99CFCFD4;
++    /** The gear inverts when focused (light grey with a dark icon), so it is obvious where focus is. */
++    private static final int BUTTON_FOCUS = 0xFFD8D8DC, BUTTON_FOCUS_ICON = 0xFF111114;
++
++    private LookMenus() {
++    }
++
++    /** A gear menu or panel row (item_input.xml). */
++    static void styleRow(View row, float density) {
++        row.setBackground(states(13 * density, FOCUS_FILM, 0, 0, density));
++        ((TextView) row.findViewById(R.id.title)).setTextColor(textStates(FOCUSED_TEXT, TEXT));
++        ((TextView) row.findViewById(R.id.status)).setTextColor(textStates(TEXT, DIM));
++        ((ImageView) row.findViewById(R.id.icon)).setImageTintList(textStates(FOCUSED_TEXT, TEXT));
++    }
++
++    /** A top-bar pill (the gear). */
++    static void styleButton(TextView button, float density) {
++        button.setBackground(states(21 * density, BUTTON_FOCUS, REST_FILM, EDGE, density));
++        button.setTextColor(textStates(BUTTON_FOCUS_ICON, TEXT));
++        button.setCompoundDrawableTintList(textStates(BUTTON_FOCUS_ICON, TEXT));
++    }
++
++    private static StateListDrawable states(float radius, int focused, int rest, int edge, float density) {
++        StateListDrawable s = new StateListDrawable();
++        s.addState(new int[]{android.R.attr.state_focused}, shape(radius, focused, edge, density));
++        s.addState(new int[]{}, shape(radius, rest, edge, density));
++        return s;
++    }
++
++    private static GradientDrawable shape(float radius, int color, int edge, float density) {
++        GradientDrawable d = new GradientDrawable();
++        d.setCornerRadius(radius);
++        d.setColor(color);
++        if (edge != 0) d.setStroke(Math.max(1, Math.round(density)), edge);
++        return d;
++    }
++
++    private static ColorStateList textStates(int focused, int rest) {
++        return new ColorStateList(new int[][]{{android.R.attr.state_focused}, {}}, new int[]{focused, rest});
++    }
++}
+diff --git a/launcher/app/src/main/java/com/gathin/tvhome/LookPrefs.java b/launcher/app/src/main/java/com/gathin/tvhome/LookPrefs.java
+new file mode 100644
+index 0000000..366b52b
+--- /dev/null
++++ b/launcher/app/src/main/java/com/gathin/tvhome/LookPrefs.java
+@@ -0,0 +1,28 @@
++package com.gathin.tvhome;
++
++import android.content.Context;
++import android.content.SharedPreferences;
++
++/** Stores the HomeLook in its own preferences file, out of reach of Config's theme-push reset. */
++final class LookPrefs {
++    private static final String NAME = "meu_chromecast_look";
++
++    private LookPrefs() {
++    }
++
++    static HomeLook load(Context ctx) {
++        return HomeLook.from(prefs(ctx).getAll());
++    }
++
++    /** commit, not apply: Home recreates right after, and must read the new value. */
++    static void save(Context ctx, String key, Object value) {
++        SharedPreferences.Editor e = prefs(ctx).edit();
++        if (value instanceof Boolean) e.putBoolean(key, (Boolean) value);
++        else e.putString(key, String.valueOf(value));
++        e.commit();
++    }
++
++    private static SharedPreferences prefs(Context ctx) {
++        return ctx.getSharedPreferences(NAME, Context.MODE_PRIVATE);
++    }
++}
+diff --git a/launcher/app/src/main/java/com/gathin/tvhome/LookTiles.java b/launcher/app/src/main/java/com/gathin/tvhome/LookTiles.java
+new file mode 100644
+index 0000000..bfdccaa
+--- /dev/null
++++ b/launcher/app/src/main/java/com/gathin/tvhome/LookTiles.java
+@@ -0,0 +1,95 @@
++package com.gathin.tvhome;
++
++import android.content.res.Resources;
++import android.graphics.Bitmap;
++import android.graphics.Canvas;
++import android.graphics.drawable.AdaptiveIconDrawable;
++import android.graphics.drawable.BitmapDrawable;
++import android.graphics.drawable.Drawable;
++import android.graphics.drawable.GradientDrawable;
++import android.os.Build;
++import android.util.TypedValue;
++import android.view.View;
++import android.view.ViewGroup;
++
++import java.util.HashMap;
++import java.util.Map;
++
++/**
++ * Night and Glass tiles (meu-chromecast): the app's icon in grey and its name inside the card, on a dark tone of
++ * the app's colour (Night) or on neutral glass that takes that tone only while focused (Glass).
++ */
++final class LookTiles {
++    /** Glass tile at rest: a faint light film over the background, with a hairline edge. */
++    private static final int GLASS_REST = 0x14FFFFFF, GLASS_EDGE = 0x24FFFFFF;
++    /** The drawing of each app's icon in one colour (IconInk), per package and colour: built once per Home. */
++    private static final Map<String, Drawable> INK = new HashMap<>();
++    private static final int INK_SIZE = 144, NIGHT_INK = 0xFFC8C8CC, GLASS_INK = 0xFFE6E6EA;
++    /** Share of the icon box the drawing's longer side fills, once cropped (IconInk.fit). */
++    private static final float INK_FILL = 0.78f;
++
++    private LookTiles() {
++    }
++
++    static void bind(AppAdapter.Holder h, AppAdapter.Entry e, int appColor, HomeLook look, float density) {
++        int tone = HomeLook.nightTone(appColor);
++        boolean glass = look.cards == HomeLook.Cards.GLASS;
++        GradientDrawable fill = new GradientDrawable();
++        ViewGroup.LayoutParams lp = h.card.getLayoutParams();
++        fill.setCornerRadius(AppAdapter.cornerRadius(lp.width, density));
++        if (glass) fill.setStroke(Math.max(1, Math.round(density)), GLASS_EDGE);
++        h.lookRest = glass ? GLASS_REST : tone;
++        h.lookFocus = tone;
++        fill.setColor(h.card.isFocused() ? h.lookFocus : h.lookRest);
++        h.lookFill = fill;
++        h.card.setBackground(fill);
++
++        h.banner.setImageDrawable(null);
++        h.banner.setVisibility(View.GONE);
++        int inkColor = glass ? GLASS_INK : NIGHT_INK;
++        h.icon.setImageDrawable(ink(h.icon.getResources(), e.pkg + inkColor, e.icon != null ? e.icon : e.banner, inkColor));
++        h.icon.setVisibility(View.VISIBLE);
++        h.label.setText(e.label);
++        h.label.setTextColor(glass ? 0xFFFFFFFF : HomeLook.NIGHT_NAME);
++        h.label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
++        h.label.setVisibility(View.VISIBLE);
++        // The name is inside the card, so the one under it would repeat it.
++        h.name.setVisibility(View.INVISIBLE);
++    }
++
++    /**
++     * The app's own monochrome icon when it ships one (Android 13+), else its foreground layer, else the whole icon,
++     * with any solid square behind the drawing taken out (IconInk) and the rest painted in one colour.
++     */
++    private static Drawable ink(Resources res, String key, Drawable icon, int color) {
++        Drawable cached = INK.get(key);
++        if (cached != null || icon == null) return cached;
++        Drawable source = icon;
++        if (icon instanceof AdaptiveIconDrawable) {
++            AdaptiveIconDrawable adaptive = (AdaptiveIconDrawable) icon;
++            Drawable mono = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ? adaptive.getMonochrome() : null;
++            if (mono != null) source = mono;
++            else if (adaptive.getForeground() != null) source = adaptive.getForeground();
++        }
++        Drawable copy = source.getConstantState() != null ? source.getConstantState().newDrawable(res).mutate() : source;
++        Bitmap bmp = Bitmap.createBitmap(INK_SIZE, INK_SIZE, Bitmap.Config.ARGB_8888);
++        copy.setBounds(0, 0, INK_SIZE, INK_SIZE);
++        copy.draw(new Canvas(bmp));
++        int[] px = new int[INK_SIZE * INK_SIZE];
++        bmp.getPixels(px, 0, INK_SIZE, 0, 0, INK_SIZE, INK_SIZE);
++        int[] alpha = IconInk.alpha(px, INK_SIZE, INK_SIZE);
++        bmp.setPixels(IconInk.paint(alpha, color), 0, INK_SIZE, 0, 0, INK_SIZE, INK_SIZE);
++        // Same visual size for every app: crop to the drawing, then fit it to one box (icons ship different margins).
++        int[] b = IconInk.bounds(alpha, INK_SIZE, INK_SIZE);
++        if (b != null) {
++            float[] dst = IconInk.fit(b, INK_SIZE, INK_FILL);
++            Bitmap fitted = Bitmap.createBitmap(INK_SIZE, INK_SIZE, Bitmap.Config.ARGB_8888);
++            new Canvas(fitted).drawBitmap(bmp, new android.graphics.Rect(b[0], b[1], b[2] + 1, b[3] + 1),
++                    new android.graphics.RectF(dst[0], dst[1], dst[2], dst[3]), new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG));
++            bmp = fitted;
++        }
++        Drawable ink = new BitmapDrawable(res, bmp);
++        INK.put(key, ink);
++        return ink;
++    }
++}
+diff --git a/launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java b/launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java
+index 5be43c9..7952efc 100644
+--- a/launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java
++++ b/launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java
+@@ -348,6 +348,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+         density = getResources().getDisplayMetrics().density;
+         // config.xml, overlaid by config.json from a pushed theme (see Config and tools/theme.sh).
+         Config cfg = Config.load(this);
++        look = LookPrefs.load(this);
+         // restore_key_services: after a force stop, put back the remote's accessibility helpers that Android took
+         // off the list (needs WRITE_SECURE_SETTINGS, granted by build-and-install with RESTORE_KEY_SERVICES=1).
+         if (cfg.restoreKeyServices) ServiceRepair.restore(this);
+@@ -378,21 +379,21 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+         coocaaSources = cfg.coocaaSources;
+ 
+         root = findViewById(R.id.root);
+-        root.setBackgroundColor(cfg.backgroundColor);
++        root.setBackgroundColor(look.background == HomeLook.Background.SKY ? cfg.backgroundColor : look.background.color);
+         // root fills the window with an opaque colour (Config keeps background_color opaque), so the window's own
+         // black under it is a second full-screen fill on every frame for nothing. The starting window still uses
+         // the theme's background, so launch looks the same.
+         getWindow().setBackgroundDrawable(null);
+         wallpaperPlayer = new WallpaperPlayer(this, root, cfg);
+         sky = findViewById(R.id.sky);
+-        sky.setIntensity(cfg.skyIntensity);
++        sky.setIntensity(look.background.sky >= 0 ? look.background.sky : cfg.skyIntensity);
+         glass = findViewById(R.id.glass);
+         if (festive) glass.setAccent(festival.accentColor());
+         ambient = findViewById(R.id.ambient);
+         // The glow is one bitmap, so its alpha can be applied while drawing it. Otherwise every frame of
+         // a fade renders it into a full-screen offscreen buffer first.
+         ambient.forceHasOverlappingRendering(false);
+-        ambientGlow = cfg.ambientGlow;
++        ambientGlow = look.ambientGlow(cfg.ambientGlow);
+         appGlow = cfg.appGlow;
+         if (!ambientGlow) ambient.setVisibility(View.GONE);
+         heroName = findViewById(R.id.heroName);
+@@ -408,9 +409,13 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+         if (cinematic) setUpCinematicShelf();
+         // dock_title false: the name above the dock (and the cinematic lines under it) never shows; the glow
+         // still follows the dock.
+-        if (!cfg.dockTitle) hero.setVisibility(View.GONE);
++        if (!look.showsHeroTitle(cfg.dockTitle)) hero.setVisibility(View.GONE);
++        heroName.setTextColor(look.primaryText());
+         greeting = findViewById(R.id.greeting);
+         clockBlock = findViewById(R.id.leftBlock);
++        headerViews = LookHeader.apply(this, look);
++        if (look.weatherLine) createWeatherLine();
++        if (look.headerTemperature || look.weatherLine) weather = new WeatherClient(this, handler, this::onWeather);
+         greetingColor = greeting.getCurrentTextColor();
+         if (getResources().getBoolean(R.bool.rtl_menu_bar)) {
+             // Center Hebrew greetings over the numeric time, independent of a visible AM/PM label.
+@@ -500,13 +505,26 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+             public void onChildViewDetachedFromWindow(@NonNull View v) {
+             }
+         });
+-        if (dockRow) grid.addItemDecoration(new DockDecoration(COLUMNS, density, cinematic, cfg.alwaysShowNames, cfg.dockOpacity, cfg.dockGlass, cfg.dockEvenPadding));
++        if (dockRow) {
++            int dockOpacity = look.background.dockOpacity >= 0 ? look.background.dockOpacity : cfg.dockOpacity;
++            DockDecoration band = new DockDecoration(COLUMNS, density, cinematic, cfg.alwaysShowNames, dockOpacity, cfg.dockGlass, cfg.dockEvenPadding);
++            band.setBandRgb(look.background.dockRgb);
++            grid.addItemDecoration(band);
++        }
+         // Reduced motion: the tiles are simply there, with no entrance (reloadApps skips it there too).
+         if (animations && !reducedMotion) {
+             grid.setLayoutAnimation(new LayoutAnimationController(
+                     AnimationUtils.loadAnimation(this, R.anim.tile_enter), 0.06f));
+         }
+         adapter = new AppAdapter(this, this, COLUMNS, cfg);
++        adapter.setLook(look);
++        if (look.focusRingColor() != 0) glass.setRing(look.focusRingColor(), 2 * density);
++        if (look.biggerCards) {
++            // Bigger cards: the grid reaches further to the sides, so the tiles have room to grow.
++            ViewGroup.MarginLayoutParams wide = (ViewGroup.MarginLayoutParams) ((View) grid.getParent()).getLayoutParams();
++            wide.leftMargin = wide.rightMargin = -Math.round(BIGGER_SIDE_DP * density);
++            ((View) grid.getParent()).setLayoutParams(wide);
++        }
+         dockApps = cfg.dockApps;
+         fillDockLeavesSlots = !cfg.fillDock;
+         Order savedOrder = Order.load(Order.file(this));
+@@ -521,13 +539,15 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+             // Item height follows the tile size, which follows the columns and the rows that must fit (AppAdapter.tileWidthPx).
+             int inner = (r - l) - grid.getPaddingLeft() - grid.getPaddingRight();
+             int tileW = AppAdapter.tileWidthPx(inner, h, COLUMNS, rowsBelowDock, cfg.dockTitle, cfg.dockRow, density);
++            tileW = HomeLook.boostedTileWidthPx(tileW, inner, COLUMNS, density, look.biggerCards ? AppAdapter.BIGGER_BOOST : 1f);
+             int itemH = AppAdapter.itemHeightPx(AppAdapter.tileHeightPx(tileW), density);
+             int dockRow = itemH + (int) (AppAdapter.DOCK_EXTRA_DP * density);   // item height plus DockDecoration offsets
+             int gridRows = itemH * rowsBelowDock;
+             // Keep the hero below the header when the library is enabled on a short screen,
+             // even when the theme requests an extra visible row below the dock.
+             int shelfClearance = cfg.appLibrary ? hero.getMeasuredHeight() + (int) (40 * density) : 0;
+-            int want = Math.max(shelfClearance, h - dockRow - gridRows - (int) (AppAdapter.BOTTOM_ROOM_DP * density));
++            int raise = look.biggerCards ? Math.round(BIGGER_RAISE_DP * density) : 0;
++            int want = Math.max(shelfClearance, h - dockRow - gridRows - (int) (AppAdapter.BOTTOM_ROOM_DP * density) - raise);
+             // Where the rows cannot fit even at the smallest tile (3 rows with the title on), the title keeps its
+             // room above the dock and the last rows run off the bottom instead of the title drawing over the clock.
+             if (MainActivity.this.dockRow && cfg.dockTitle && rowsBelowDock > 0) want = Math.max(want, (int) (AppAdapter.TITLE_ROOM_DP * density));
+@@ -600,6 +620,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+         btnReorder.setVisibility(cfg.reorderButton ? View.VISIBLE : View.GONE);
+         if (!cfg.showNetworkPill) btnWifi.setVisibility(View.GONE);
+         showInputsPill = cfg.showInputsPill;
++        showInputsMenuRow = cfg.showInputsPill;
+         btnLibraryTop = findViewById(R.id.btnLibraryTop);
+         btnLibraryTop.setOnClickListener(v -> {
+             onLibraryRequested();
+@@ -619,6 +640,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+             ((TextView) btnSettings).setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_settings, 0, 0, 0);
+             if (!iconOnlyButtons) makeIconOnly((TextView) btnSettings);
+             btnSettings.setOnClickListener(v -> showTopMenu());
++            if (look.cards == HomeLook.Cards.NIGHT) LookMenus.styleButton((TextView) btnSettings, density);
+             // The lone gear sits at the header's middle, not on its bottom line like the row of pills.
+             LinearLayout topButtons = findViewById(R.id.topButtons);
+             RelativeLayout.LayoutParams tlp = (RelativeLayout.LayoutParams) topButtons.getLayoutParams();
+@@ -700,6 +722,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+         }
+         // Not after recreate(): the launch intent survives it and would open the settings again.
+         if (savedInstanceState == null && !openLauncherSettingsIfAsked(getIntent())) openInputsIfAsked(getIntent());
++        // A Theme or Options choice recreated Home: open the same panel again, on the row that was chosen.
++        int reopen = savedInstanceState == null ? 0 : savedInstanceState.getInt(STATE_LOOK_PANEL, 0);
++        if (reopen != 0) {
++            int row = savedInstanceState.getInt(STATE_LOOK_ROW, 0);
++            root.post(() -> showLookPanel(reopen, row));
++        }
+     }
+ 
+     /**
+@@ -778,6 +806,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+     @Override
+     protected void onStart() {
+         super.onStart();
++        if (weather != null) weather.start();
+         stopped = false;
+         started = true;
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+@@ -1023,6 +1052,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+     @Override
+     protected void onStop() {
+         super.onStop();
++        if (weather != null) weather.stop();
+         started = false;
+         unregisterReceiver(timeReceiver);
+         handler.removeCallbacks(clockCheck);
+@@ -1550,7 +1580,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+     private void showHero(int position, float dockTopInRoot) {
+         String label = adapter.labelAt(position);
+         int color = adapter.ambientColorAt(position);
+-        float y = dockTopInRoot - 14 * density - 26 * density - hero.getHeight();
++        placeWeatherLine(dockTopInRoot);
++        float y = dockTopInRoot - 14 * density - 26 * density - hero.getHeight() - weatherLineLift();
+         boolean changed = !label.contentEquals(heroName.getText());
+         if (cinematic) showHeroArt(position);
+ 
+@@ -1781,6 +1812,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+         }
+         // The default tint mode, SRC_IN, keeps the mask's alpha and takes the colour from the tint.
+         glow.setTint(0xFF000000 | color);
++        glow.setAlpha(Math.round(255 * look.background.glowStrength));
+     }
+ 
+     private void transitionAmbient(int color) {
+@@ -2401,6 +2433,19 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+     private boolean iconOnlyButtons;
+     /** config.xml top_menu: Inputs, Wi-Fi and Settings folded into one gear. */
+     private boolean topMenu;
++    /** show_inputs_pill as configured: top_menu clears showInputsPill, so its Inputs row reads this. */
++    private boolean showInputsMenuRow = true;
++    /** meu-chromecast: card style, background and header switches from the Theme and Options panels. */
++    private HomeLook look;
++    /** The panel (and row) to open again after a choice recreated Home; 0 for none. */
++    private int lookPanelToReopen, lookRowToReopen;
++    /** Phase 2 (ADR-0006): the small line's temperature, the phrase above the dock and their data. */
++    private LookHeader.Views headerViews;
++    private WeatherClient weather;
++    private WeatherNow weatherNow;
++    private LinearLayout weatherLine;
++    private ImageView weatherLineIcon;
++    private TextView weatherLineText;
+     private boolean launcherSettingsButton;
+     /** icon_only_buttons without wifi_label_width: the Wi-Fi pill shows no network name. */
+     private boolean wifiIconOnly;
+@@ -2843,9 +2888,172 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+             popup.dismiss();
+             action.run();
+         });
++        if (look.cards == HomeLook.Cards.NIGHT) LookMenus.styleRow(row, density);
+         rows.addView(row);
+     }
+ 
++    // ---- meu-chromecast: Theme and Options panels -------------------------------------------------
++
++    private static final int LOOK_THEME = 1, LOOK_OPTIONS = 2;
++    private static final String STATE_LOOK_PANEL = "meu_look_panel", STATE_LOOK_ROW = "meu_look_row";
++    /** Bigger cards: how far the grid reaches past the side margins, and how much higher the dock sits. */
++    private static final float BIGGER_SIDE_DP = 12f, BIGGER_RAISE_DP = 38f;
++
++    private static int cardsLabel(HomeLook.Cards c) {
++        return c == HomeLook.Cards.NIGHT ? R.string.meu_cards_night
++                : c == HomeLook.Cards.GLASS ? R.string.meu_cards_glass : R.string.meu_cards_classic;
++    }
++
++    private static int backgroundLabel(HomeLook.Background b) {
++        return b == HomeLook.Background.GRAPHITE ? R.string.meu_bg_graphite
++                : b == HomeLook.Background.MIDNIGHT ? R.string.meu_bg_midnight : R.string.meu_bg_sky;
++    }
++
++    private static void setRowStatus(LinearLayout rows, CharSequence text) {
++        TextView status = rows.getChildAt(rows.getChildCount() - 1).findViewById(R.id.status);
++        status.setText(text);
++        status.setVisibility(View.VISIBLE);
++    }
++
++    /** Theme (cards and background) or Options (header switches, bigger cards): every choice applies at once. */
++    private void showLookPanel(int which, int focusRow) {
++        if (openPopup != null) openPopup.dismiss();
++        View anchor = findViewById(R.id.btnSettings);
++        View panel = getLayoutInflater().inflate(R.layout.popup_inputs, root, false);
++        LinearLayout rows = panel.findViewById(R.id.rows);
++        PopupWindow popup = glassPopup(panel, (int) (260 * density));
++        List<View> choices = new ArrayList<>();
++        if (which == LOOK_THEME) {
++            addLookSection(rows, R.string.meu_section_cards);
++            for (HomeLook.Cards c : HomeLook.Cards.values()) {
++                addLookChoice(rows, popup, choices, which, getString(cardsLabel(c)), look.cards == c, HomeLook.KEY_CARDS, c.id);
++            }
++            addLookSection(rows, R.string.meu_section_background);
++            for (HomeLook.Background b : HomeLook.Background.values()) {
++                addLookChoice(rows, popup, choices, which, getString(backgroundLabel(b)), look.background == b,
++                        HomeLook.KEY_BACKGROUND, b.id);
++            }
++        } else {
++            addLookSection(rows, R.string.meu_section_options);
++            addLookSwitch(rows, popup, choices, R.string.meu_opt_greeting, HomeLook.KEY_GREETING, look.greeting);
++            addLookSwitch(rows, popup, choices, R.string.meu_opt_big_clock, HomeLook.KEY_BIG_CLOCK, look.bigClock);
++            addLookSwitch(rows, popup, choices, R.string.meu_opt_small_clock, HomeLook.KEY_SMALL_CLOCK, look.smallClock);
++            addLookSwitch(rows, popup, choices, R.string.meu_opt_date, HomeLook.KEY_DATE, look.date);
++            addLookSwitch(rows, popup, choices, R.string.meu_opt_header_temperature, HomeLook.KEY_HEADER_TEMPERATURE, look.headerTemperature);
++            addLookSwitch(rows, popup, choices, R.string.meu_opt_weather_line, HomeLook.KEY_WEATHER_LINE, look.weatherLine);
++            addLookSwitch(rows, popup, choices, R.string.meu_opt_bigger_cards, HomeLook.KEY_BIGGER_CARDS, look.biggerCards);
++        }
++        panel.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
++        popup.setWidth(Math.max((int) (260 * density), Math.min(panel.getMeasuredWidth(), (int) (360 * density))));
++        dropIn(popup, panel, anchor, getResources().getBoolean(R.bool.rtl_menu_bar) ? Gravity.START : Gravity.END);
++        choices.get(Math.max(0, Math.min(focusRow, choices.size() - 1))).requestFocus();
++    }
++
++    private void addLookSection(LinearLayout rows, int title) {
++        TextView label = new TextView(this);
++        label.setText(title);
++        label.setAllCaps(true);
++        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
++        label.setLetterSpacing(0.2f);
++        label.setTextColor(look.cards == HomeLook.Cards.NIGHT ? HomeLook.NIGHT_SECONDARY : 0x99FFFFFF);
++        int h = (int) (12 * density);
++        label.setPadding(h, (int) ((rows.getChildCount() == 0 ? 6 : 14) * density), h, (int) (4 * density));
++        rows.addView(label);
++    }
++
++    private void addLookChoice(LinearLayout rows, PopupWindow popup, List<View> choices, int which, String title,
++                               boolean selected, String key, String value) {
++        int index = choices.size();
++        addInputRow(rows, popup, selected ? R.drawable.ic_meu_radio_on : R.drawable.ic_meu_radio_off, title, -1,
++                () -> applyLook(which, index, key, value, selected));
++        choices.add(rows.getChildAt(rows.getChildCount() - 1));
++    }
++
++    private void addLookSwitch(LinearLayout rows, PopupWindow popup, List<View> choices, int title, String key, boolean on) {
++        int index = choices.size();
++        addInputRow(rows, popup, on ? R.drawable.ic_meu_toggle_on : R.drawable.ic_meu_toggle_off, getString(title), -1,
++                () -> applyLook(LOOK_OPTIONS, index, key, !on, false));
++        setRowStatus(rows, getString(on ? R.string.on : R.string.off));
++        choices.add(rows.getChildAt(rows.getChildCount() - 1));
++    }
++
++    /** Saves the choice and rebuilds Home with it (Config and the views are built once, in onCreate). */
++    private void applyLook(int which, int row, String key, Object value, boolean unchanged) {
++        if (unchanged) {
++            root.post(() -> showLookPanel(which, row));
++            return;
++        }
++        LookPrefs.save(this, key, value);
++        lookPanelToReopen = which;
++        lookRowToReopen = row;
++        recreate();
++    }
++
++    private void onWeather(WeatherNow now) {
++        weatherNow = now;
++        LookHeader.showWeather(headerViews, look, now);
++        if (weatherLine == null) return;
++        boolean show = now != null;
++        if (show) {
++            weatherLineIcon.setImageResource(LookHeader.iconRes(now.icon()));
++            weatherLineText.setText(getString(phraseRes(now.band()), now.temperature));
++        }
++        weatherLine.setVisibility(show && weatherLine.getTag() != null ? View.VISIBLE : View.INVISIBLE);
++    }
++
++    private static int phraseRes(WeatherNow.Band band) {
++        switch (band) {
++            case RAIN: return R.string.meu_weather_rain;
++            case HOT: return R.string.meu_weather_hot;
++            case PLEASANT: return R.string.meu_weather_pleasant;
++            case COOL: return R.string.meu_weather_cool;
++            default: return R.string.meu_weather_cold;
++        }
++    }
++
++    /** Icon and phrase centred over the dock, in the small line's size and colour. Placed by showHero. */
++    private void createWeatherLine() {
++        weatherLine = new LinearLayout(this);
++        weatherLine.setOrientation(LinearLayout.HORIZONTAL);
++        weatherLine.setGravity(Gravity.CENTER);
++        weatherLine.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
++        weatherLineIcon = new ImageView(this);
++        weatherLineIcon.setImageTintList(android.content.res.ColorStateList.valueOf(look.secondaryText()));
++        int size = Math.round(20 * density);
++        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(size, size);
++        ilp.setMarginEnd(Math.round(6 * density));
++        weatherLine.addView(weatherLineIcon, ilp);
++        weatherLineText = LookHeader.smallText(this, LookHeader.font(this, R.font.outfit_light), look.secondaryText(), "");
++        weatherLine.addView(weatherLineText);
++        weatherLine.setVisibility(View.INVISIBLE);
++        root.addView(weatherLine, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
++                ViewGroup.LayoutParams.WRAP_CONTENT));
++    }
++
++    /** Just above the dock band (which starts ~23dp above the tiles); marks the line as placed so onWeather may show it. */
++    private void placeWeatherLine(float dockTopInRoot) {
++        if (weatherLine == null) return;
++        if (weatherLine.getHeight() == 0) weatherLine.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
++        int h = weatherLine.getHeight() > 0 ? weatherLine.getHeight() : weatherLine.getMeasuredHeight();
++        weatherLine.setY(dockTopInRoot - 34 * density - h);
++        weatherLine.setTag(Boolean.TRUE);
++        if (weatherNow != null) weatherLine.setVisibility(View.VISIBLE);
++    }
++
++    /** The big app title moves up over the phrase when both show (Classic). */
++    private float weatherLineLift() {
++        return weatherLine != null && weatherNow != null ? 30 * density : 0f;
++    }
++
++    @Override
++    protected void onSaveInstanceState(@NonNull Bundle outState) {
++        super.onSaveInstanceState(outState);
++        if (lookPanelToReopen != 0) {
++            outState.putInt(STATE_LOOK_PANEL, lookPanelToReopen);
++            outState.putInt(STATE_LOOK_ROW, lookRowToReopen);
++        }
++    }
++
+     // ---- launcher settings and module cards -------------------------------------------------------
+ 
+     /** top_menu: the gear's dropdown, standing in for the Inputs, Wi-Fi and Settings pills. */
+@@ -2855,7 +3063,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+         LinearLayout rows = panel.findViewById(R.id.rows);
+         PopupWindow popup = glassPopup(panel, (int) (220 * density));
+         // Inputs opens its own list once this one has closed.
+-        addInputRow(rows, popup, R.drawable.ic_input, getString(R.string.inputs), -1, () -> root.post(this::showInputs));
++        if (showInputsMenuRow) addInputRow(rows, popup, R.drawable.ic_input, getString(R.string.inputs), -1, () -> root.post(this::showInputs));
+         addInputRow(rows, popup, R.drawable.ic_wifi, getString(R.string.quick_network), -1, this::openNetworkPill);
+         CharSequence network = wifiIconOnly ? btnWifi.getContentDescription() : btnWifi.getText();
+         if (!TextUtils.isEmpty(network)) {
+@@ -2863,11 +3071,16 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
+             status.setText(network);
+             status.setVisibility(View.VISIBLE);
+         }
++        addInputRow(rows, popup, R.drawable.ic_meu_palette, getString(R.string.meu_theme), -1, () -> showLookPanel(LOOK_THEME, 0));
++        setRowStatus(rows, getString(cardsLabel(look.cards)));
++        addInputRow(rows, popup, R.drawable.ic_meu_tune, getString(R.string.meu_options), -1, () -> showLookPanel(LOOK_OPTIONS, 0));
++        addInputRow(rows, popup, R.drawable.ic_swap_vert, getString(R.string.reorder), -1, this::toggleReorder);
+         if (launcherSettingsButton) {
+             addInputRow(rows, popup, R.drawable.ic_home_settings_pill, getString(R.string.launcher_settings), -1,
+                     () -> startActivityForResult(new Intent(this, LauncherSettingsActivity.class), LAUNCHER_SETTINGS_REQUEST));
+         } else {
+-            addInputRow(rows, popup, R.drawable.ic_settings, getString(R.string.settings), -1,
++            // meu-chromecast: names the device, so it is not mistaken for the launcher's own Theme and Options.
++            addInputRow(rows, popup, R.drawable.ic_settings, getString(R.string.meu_device_settings), -1,
+                     () -> open(systemIntent(Settings.ACTION_SETTINGS)));
+         }
+         panel.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+diff --git a/launcher/app/src/main/java/com/gathin/tvhome/WeatherClient.java b/launcher/app/src/main/java/com/gathin/tvhome/WeatherClient.java
+new file mode 100644
+index 0000000..d20498c
+--- /dev/null
++++ b/launcher/app/src/main/java/com/gathin/tvhome/WeatherClient.java
+@@ -0,0 +1,134 @@
++package com.gathin.tvhome;
++
++import android.Manifest;
++import android.content.Context;
++import android.content.SharedPreferences;
++import android.content.pm.PackageManager;
++import android.location.Location;
++import android.location.LocationManager;
++import android.os.Build;
++import android.os.Handler;
++
++import java.io.ByteArrayOutputStream;
++import java.io.InputStream;
++import java.net.HttpURLConnection;
++import java.net.URL;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++
++/**
++ * meu-chromecast (ADR-0006): the current temperature for the system's last known location, from Open-Meteo, every
++ * 30 minutes off the main thread. The last reading is kept, so Home shows it at once after a restart while it is
++ * still fresh; no location, no network or a stale reading hide the temperature instead of showing an error.
++ */
++final class WeatherClient {
++    interface Listener {
++        /** A fresh reading, or null when there is none to show. Called on the main thread. */
++        void onWeather(WeatherNow now);
++    }
++
++    private static final long REFRESH_MS = 30 * 60 * 1000L;
++    private static final String PREFS = "meu_chromecast_weather";
++    private static final ExecutorService NETWORK = Executors.newSingleThreadExecutor();
++
++    private final Context ctx;
++    private final Handler main;
++    private final Listener listener;
++    private final Runnable tick = this::tick;
++    private WeatherNow last;
++
++    WeatherClient(Context ctx, Handler main, Listener listener) {
++        this.ctx = ctx.getApplicationContext();
++        this.main = main;
++        this.listener = listener;
++        SharedPreferences p = prefs();
++        if (p.contains("fetched_at")) {
++            last = new WeatherNow(p.getInt("temperature", 0), p.getInt("code", 0), p.getBoolean("day", true),
++                    p.getLong("fetched_at", 0));
++        }
++    }
++
++    void start() {
++        main.removeCallbacks(tick);
++        tick();
++    }
++
++    void stop() {
++        main.removeCallbacks(tick);
++    }
++
++    private void tick() {
++        long now = System.currentTimeMillis();
++        listener.onWeather(last != null && last.fresh(now) ? last : null);
++        if (last == null || now - last.fetchedAt >= REFRESH_MS || now < last.fetchedAt) fetch();
++        main.postDelayed(tick, REFRESH_MS);
++    }
++
++    private void fetch() {
++        NETWORK.execute(() -> {
++            Location where = lastLocation();
++            if (where == null) return;
++            WeatherNow fresh = WeatherNow.parse(get(WeatherNow.requestUrl(where.getLatitude(), where.getLongitude())),
++                    System.currentTimeMillis());
++            if (fresh == null) return;
++            prefs().edit().putInt("temperature", fresh.temperature).putInt("code", fresh.code)
++                    .putBoolean("day", fresh.day).putLong("fetched_at", fresh.fetchedAt).apply();
++            main.post(() -> {
++                last = fresh;
++                listener.onWeather(fresh);
++            });
++        });
++    }
++
++    /** The newest fix any provider already has; the launcher never asks for a new one. */
++    private Location lastLocation() {
++        if (ctx.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
++                && ctx.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
++            return null;
++        }
++        LocationManager lm = ctx.getSystemService(LocationManager.class);
++        if (lm == null) return null;
++        List<String> providers = new ArrayList<>();
++        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) providers.add(LocationManager.FUSED_PROVIDER);
++        providers.add(LocationManager.NETWORK_PROVIDER);
++        providers.add(LocationManager.PASSIVE_PROVIDER);
++        providers.add(LocationManager.GPS_PROVIDER);
++        Location best = null;
++        for (String p : providers) {
++            try {
++                Location l = lm.getLastKnownLocation(p);
++                if (l != null && (best == null || l.getTime() > best.getTime())) best = l;
++            } catch (SecurityException | IllegalArgumentException ignored) {
++                // a provider this device does not have, or a permission taken back meanwhile
++            }
++        }
++        return best;
++    }
++
++    private static String get(String url) {
++        HttpURLConnection c = null;
++        try {
++            c = (HttpURLConnection) new URL(url).openConnection();
++            c.setConnectTimeout(10_000);
++            c.setReadTimeout(10_000);
++            if (c.getResponseCode() != 200) return null;
++            try (InputStream in = c.getInputStream()) {
++                ByteArrayOutputStream out = new ByteArrayOutputStream();
++                byte[] buf = new byte[4096];
++                for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
++                return out.toString(StandardCharsets.UTF_8.name());
++            }
++        } catch (Exception e) {
++            return null;
++        } finally {
++            if (c != null) c.disconnect();
++        }
++    }
++
++    private SharedPreferences prefs() {
++        return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
++    }
++}
+diff --git a/launcher/app/src/main/java/com/gathin/tvhome/WeatherNow.java b/launcher/app/src/main/java/com/gathin/tvhome/WeatherNow.java
+new file mode 100644
+index 0000000..3ba25f0
+--- /dev/null
++++ b/launcher/app/src/main/java/com/gathin/tvhome/WeatherNow.java
+@@ -0,0 +1,90 @@
++package com.gathin.tvhome;
++
++import java.util.Locale;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++/**
++ * meu-chromecast: the current temperature from Open-Meteo (ADR-0006) and the rules that turn it into an icon and a
++ * phrase. Plain Java, so it is unit-tested; WeatherClient fetches it.
++ */
++final class WeatherNow {
++
++    enum Icon { SUN, MOON, CLOUD_SUN, CLOUD_MOON, CLOUD, FOG, RAIN, STORM }
++
++    enum Band { RAIN, HOT, PLEASANT, COOL, COLD }
++
++    /** A reading older than this is not shown. */
++    static final long MAX_AGE_MS = 2 * 60 * 60 * 1000L;
++
++    private static final Pattern CURRENT = Pattern.compile("\"current\"\\s*:\\s*\\{([^}]*)\\}");
++    private static final Pattern TEMPERATURE = Pattern.compile("\"temperature_2m\"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)");
++    private static final Pattern CODE = Pattern.compile("\"weather_code\"\\s*:\\s*(\\d+)");
++    private static final Pattern DAY = Pattern.compile("\"is_day\"\\s*:\\s*([01])");
++
++    final int temperature;
++    final int code;
++    final boolean day;
++    final long fetchedAt;
++
++    WeatherNow(int temperature, int code, boolean day, long fetchedAt) {
++        this.temperature = temperature;
++        this.code = code;
++        this.day = day;
++        this.fetchedAt = fetchedAt;
++    }
++
++    /** The "current" block of a forecast response, or null when it is missing or incomplete. */
++    static WeatherNow parse(String json, long fetchedAt) {
++        if (json == null) return null;
++        Matcher current = CURRENT.matcher(json);
++        if (!current.find()) return null;
++        String block = current.group(1);
++        Matcher t = TEMPERATURE.matcher(block), c = CODE.matcher(block), d = DAY.matcher(block);
++        if (!t.find() || !c.find() || !d.find()) return null;
++        return new WeatherNow((int) Math.round(Double.parseDouble(t.group(1))), Integer.parseInt(c.group(1)),
++                "1".equals(d.group(1)), fetchedAt);
++    }
++
++    boolean fresh(long now) {
++        long age = now - fetchedAt;
++        return age >= 0 && age <= MAX_AGE_MS;
++    }
++
++    Icon icon() {
++        return icon(code, day);
++    }
++
++    Band band() {
++        return band(temperature, raining(code));
++    }
++
++    /** WMO weather codes as Open-Meteo reports them. Snow has no icon of its own here (it does not snow at home). */
++    static Icon icon(int code, boolean day) {
++        if (code == 0) return day ? Icon.SUN : Icon.MOON;
++        if (code == 1 || code == 2) return day ? Icon.CLOUD_SUN : Icon.CLOUD_MOON;
++        if (code == 45 || code == 48) return Icon.FOG;
++        if (code >= 95 && code <= 99) return Icon.STORM;
++        if (raining(code)) return Icon.RAIN;
++        return Icon.CLOUD;
++    }
++
++    static boolean raining(int code) {
++        return (code >= 51 && code <= 67) || (code >= 80 && code <= 82) || (code >= 95 && code <= 99);
++    }
++
++    static Band band(int temperature, boolean raining) {
++        if (raining) return Band.RAIN;
++        if (temperature >= 28) return Band.HOT;
++        if (temperature >= 20) return Band.PLEASANT;
++        if (temperature >= 13) return Band.COOL;
++        return Band.COLD;
++    }
++
++    /** Two decimals (~1 km): enough for the weather, and the exact position never leaves the TV. */
++    static String requestUrl(double latitude, double longitude) {
++        return String.format(Locale.ROOT,
++                "https://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f&current=temperature_2m,weather_code,is_day",
++                latitude, longitude);
++    }
++}
+diff --git a/launcher/app/src/main/res/drawable/ic_meu_palette.xml b/launcher/app/src/main/res/drawable/ic_meu_palette.xml
+new file mode 100644
+index 0000000..aebbbdc
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_meu_palette.xml
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Material "palette", for the gear menu's Theme row (meu-chromecast). -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="22dp" android:height="22dp"
++    android:viewportWidth="24" android:viewportHeight="24">
++    <path
++        android:fillColor="#FFFFFFFF"
++        android:pathData="M12,3c-4.97,0 -9,4.03 -9,9s4.03,9 9,9c0.83,0 1.5,-0.67 1.5,-1.5 0,-0.39 -0.15,-0.74 -0.39,-1.01 -0.23,-0.26 -0.38,-0.61 -0.38,-0.99 0,-0.83 0.67,-1.5 1.5,-1.5L16,16c2.76,0 5,-2.24 5,-5 0,-4.42 -4.03,-8 -9,-8zM6.5,12c-0.83,0 -1.5,-0.67 -1.5,-1.5S5.67,9 6.5,9 8,9.67 8,10.5 7.33,12 6.5,12zM9.5,8C8.67,8 8,7.33 8,6.5S8.67,5 9.5,5s1.5,0.67 1.5,1.5S10.33,8 9.5,8zM14.5,8c-0.83,0 -1.5,-0.67 -1.5,-1.5S13.67,5 14.5,5s1.5,0.67 1.5,1.5S15.33,8 14.5,8zM17.5,12c-0.83,0 -1.5,-0.67 -1.5,-1.5S16.67,9 17.5,9s1.5,0.67 1.5,1.5 -0.67,1.5 -1.5,1.5z" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_meu_radio_off.xml b/launcher/app/src/main/res/drawable/ic_meu_radio_off.xml
+new file mode 100644
+index 0000000..919d168
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_meu_radio_off.xml
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Material icon for the meu-chromecast Theme and Options panels. Tinted by the row's text colour. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="22dp" android:height="22dp"
++    android:viewportWidth="24" android:viewportHeight="24">
++    <path
++        android:fillColor="#FFFFFFFF"
++        android:pathData="M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2zM12,20c-4.42,0 -8,-3.58 -8,-8s3.58,-8 8,-8 8,3.58 8,8 -3.58,8 -8,8z" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_meu_radio_on.xml b/launcher/app/src/main/res/drawable/ic_meu_radio_on.xml
+new file mode 100644
+index 0000000..7958f04
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_meu_radio_on.xml
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Material icon for the meu-chromecast Theme and Options panels. Tinted by the row's text colour. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="22dp" android:height="22dp"
++    android:viewportWidth="24" android:viewportHeight="24">
++    <path
++        android:fillColor="#FFFFFFFF"
++        android:pathData="M12,7c-2.76,0 -5,2.24 -5,5s2.24,5 5,5 5,-2.24 5,-5 -2.24,-5 -5,-5zM12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2zM12,20c-4.42,0 -8,-3.58 -8,-8s3.58,-8 8,-8 8,3.58 8,8 -3.58,8 -8,8z" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_meu_toggle_off.xml b/launcher/app/src/main/res/drawable/ic_meu_toggle_off.xml
+new file mode 100644
+index 0000000..32d1fdd
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_meu_toggle_off.xml
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Material icon for the meu-chromecast Theme and Options panels. Tinted by the row's text colour. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="22dp" android:height="22dp"
++    android:viewportWidth="24" android:viewportHeight="24">
++    <path
++        android:fillColor="#FFFFFFFF"
++        android:pathData="M17,7H7c-2.76,0 -5,2.24 -5,5s2.24,5 5,5h10c2.76,0 5,-2.24 5,-5s-2.24,-5 -5,-5zM7,15c-1.66,0 -3,-1.34 -3,-3s1.34,-3 3,-3 3,1.34 3,3 -1.34,3 -3,3z" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_meu_toggle_on.xml b/launcher/app/src/main/res/drawable/ic_meu_toggle_on.xml
+new file mode 100644
+index 0000000..05ab8a0
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_meu_toggle_on.xml
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Material icon for the meu-chromecast Theme and Options panels. Tinted by the row's text colour. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="22dp" android:height="22dp"
++    android:viewportWidth="24" android:viewportHeight="24">
++    <path
++        android:fillColor="#FFFFFFFF"
++        android:pathData="M17,7H7c-2.76,0 -5,2.24 -5,5s2.24,5 5,5h10c2.76,0 5,-2.24 5,-5s-2.24,-5 -5,-5zM17,15c-1.66,0 -3,-1.34 -3,-3s1.34,-3 3,-3 3,1.34 3,3 -1.34,3 -3,3z" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_meu_tune.xml b/launcher/app/src/main/res/drawable/ic_meu_tune.xml
+new file mode 100644
+index 0000000..4a71c44
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_meu_tune.xml
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Material "tune", for the gear menu's Options row (meu-chromecast). -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="22dp" android:height="22dp"
++    android:viewportWidth="24" android:viewportHeight="24">
++    <path
++        android:fillColor="#FFFFFFFF"
++        android:pathData="M3,17v2h6v-2L3,17zM3,5v2h10L13,5L3,5zM13,21v-2h8v-2h-8v-2h-2v6h2zM7,9v2L3,11v2h4v2h2L9,9L7,9zM21,13v-2L11,11v2h10zM15,9h2L17,7h4L21,5h-4L17,3h-2v6z" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_meu_weather_cloud.xml b/launcher/app/src/main/res/drawable/ic_meu_weather_cloud.xml
+new file mode 100644
+index 0000000..40fc95b
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_meu_weather_cloud.xml
+@@ -0,0 +1,13 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- meu-chromecast weather icon (cloud), thin stroke like the launcher's icons. Tinted in code. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp" android:height="24dp"
++    android:viewportWidth="24" android:viewportHeight="24">
++    <path
++        android:pathData="M17,18H8a4,4 0,1 1,0.9 -7.9A5,5 0,0 1,18 12a3,3 0,0 1,-1 6z"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_meu_weather_cloud_moon.xml b/launcher/app/src/main/res/drawable/ic_meu_weather_cloud_moon.xml
+new file mode 100644
+index 0000000..1d6fc7a
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_meu_weather_cloud_moon.xml
+@@ -0,0 +1,20 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- meu-chromecast weather icon (cloud_moon), thin stroke like the launcher's icons. Tinted in code. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp" android:height="24dp"
++    android:viewportWidth="24" android:viewportHeight="24">
++    <path
++        android:pathData="M11,3.5a4,4 0,0 0,4.6 4.9a4,4 0,0 1,-4.6 -4.9z"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++    <path
++        android:pathData="M17,20H8a4,4 0,1 1,0.9 -7.9A5,5 0,0 1,18 14a3,3 0,0 1,-1 6z"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_meu_weather_cloud_sun.xml b/launcher/app/src/main/res/drawable/ic_meu_weather_cloud_sun.xml
+new file mode 100644
+index 0000000..44c8b27
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_meu_weather_cloud_sun.xml
+@@ -0,0 +1,27 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- meu-chromecast weather icon (cloud_sun), thin stroke like the launcher's icons. Tinted in code. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp" android:height="24dp"
++    android:viewportWidth="24" android:viewportHeight="24">
++    <path
++        android:pathData="M8,3v1.5M3.2,5.2l1,1M1.5,10H3M12.8,5.2l-1,1"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++    <path
++        android:pathData="M5.2,11.6a3.5,3.5 0,0 1,6.3 -3.2"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++    <path
++        android:pathData="M17.5,20H9.5a3.5,3.5 0,1 1,0.8 -6.9A4.5,4.5 0,0 1,18.5 15a2.5,2.5 0,0 1,-1 5z"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_meu_weather_fog.xml b/launcher/app/src/main/res/drawable/ic_meu_weather_fog.xml
+new file mode 100644
+index 0000000..04bc893
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_meu_weather_fog.xml
+@@ -0,0 +1,20 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- meu-chromecast weather icon (fog), thin stroke like the launcher's icons. Tinted in code. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp" android:height="24dp"
++    android:viewportWidth="24" android:viewportHeight="24">
++    <path
++        android:pathData="M7,10a5,5 0,0 1,9.6 -1.9A3.5,3.5 0,0 1,18.5 10"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++    <path
++        android:pathData="M4,13.5h16M6,17h12M4,20.5h16"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_meu_weather_moon.xml b/launcher/app/src/main/res/drawable/ic_meu_weather_moon.xml
+new file mode 100644
+index 0000000..26fcfe9
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_meu_weather_moon.xml
+@@ -0,0 +1,13 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- meu-chromecast weather icon (moon), thin stroke like the launcher's icons. Tinted in code. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp" android:height="24dp"
++    android:viewportWidth="24" android:viewportHeight="24">
++    <path
++        android:pathData="M20,14.5A8,8 0,0 1,9.5 4a8,8 0,1 0,10.5 10.5z"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_meu_weather_rain.xml b/launcher/app/src/main/res/drawable/ic_meu_weather_rain.xml
+new file mode 100644
+index 0000000..35a2307
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_meu_weather_rain.xml
+@@ -0,0 +1,20 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- meu-chromecast weather icon (rain), thin stroke like the launcher's icons. Tinted in code. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp" android:height="24dp"
++    android:viewportWidth="24" android:viewportHeight="24">
++    <path
++        android:pathData="M17,15H8a4,4 0,1 1,0.9 -7.9A5,5 0,0 1,18 9a3,3 0,0 1,-1 6z"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++    <path
++        android:pathData="M9,18l-1,3M13,18l-1,3M17,18l-1,3"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_meu_weather_storm.xml b/launcher/app/src/main/res/drawable/ic_meu_weather_storm.xml
+new file mode 100644
+index 0000000..2663b2f
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_meu_weather_storm.xml
+@@ -0,0 +1,20 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- meu-chromecast weather icon (storm), thin stroke like the launcher's icons. Tinted in code. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp" android:height="24dp"
++    android:viewportWidth="24" android:viewportHeight="24">
++    <path
++        android:pathData="M17,15H8a4,4 0,1 1,0.9 -7.9A5,5 0,0 1,18 9a3,3 0,0 1,-1 6z"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++    <path
++        android:pathData="M13,13l-3,4h4l-3,4"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++</vector>
+diff --git a/launcher/app/src/main/res/drawable/ic_meu_weather_sun.xml b/launcher/app/src/main/res/drawable/ic_meu_weather_sun.xml
+new file mode 100644
+index 0000000..9dd84b5
+--- /dev/null
++++ b/launcher/app/src/main/res/drawable/ic_meu_weather_sun.xml
+@@ -0,0 +1,20 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- meu-chromecast weather icon (sun), thin stroke like the launcher's icons. Tinted in code. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="24dp" android:height="24dp"
++    android:viewportWidth="24" android:viewportHeight="24">
++    <path
++        android:pathData="M12,8a4,4 0,1 0,0 8a4,4 0,1 0,0 -8z"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++    <path
++        android:pathData="M12,2v2M12,20v2M4.9,4.9l1.4,1.4M17.7,17.7l1.4,1.4M2,12h2M20,12h2M4.9,19.1l1.4,-1.4M17.7,6.3l1.4,-1.4"
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="1.8"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:fillColor="#00000000" />
++</vector>
+diff --git a/launcher/app/src/main/res/values-pt/strings_meu.xml b/launcher/app/src/main/res/values-pt/strings_meu.xml
+new file mode 100644
+index 0000000..b44d69d
+--- /dev/null
++++ b/launcher/app/src/main/res/values-pt/strings_meu.xml
+@@ -0,0 +1,27 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <string name="meu_theme">Tema</string>
++    <string name="meu_options">Opções</string>
++    <string name="meu_section_cards">Cards</string>
++    <string name="meu_section_background">Fundo</string>
++    <string name="meu_section_options">Opções</string>
++    <string name="meu_cards_classic">Clássico</string>
++    <string name="meu_cards_night">Noite</string>
++    <string name="meu_cards_glass">Vidro</string>
++    <string name="meu_bg_sky">Céu</string>
++    <string name="meu_bg_graphite">Grafite</string>
++    <string name="meu_bg_midnight">Meia-noite</string>
++    <string name="meu_opt_greeting">Saudação</string>
++    <string name="meu_opt_big_clock">Relógio grande</string>
++    <string name="meu_opt_small_clock">Relógio pequeno</string>
++    <string name="meu_opt_date">Data</string>
++    <string name="meu_opt_bigger_cards">Cards maiores</string>
++    <string name="meu_opt_header_temperature">Temperatura no cabeçalho</string>
++    <string name="meu_opt_weather_line">Frase do tempo acima dos cards</string>
++    <string name="meu_weather_rain">Está chovendo, %1$d°</string>
++    <string name="meu_weather_hot">Hoje está calor, %1$d°</string>
++    <string name="meu_weather_pleasant">O tempo está agradável, %1$d°</string>
++    <string name="meu_weather_cool">Está fresquinho, %1$d°</string>
++    <string name="meu_weather_cold">Hoje está frio, %1$d°</string>
++    <string name="meu_device_settings">Configurações do Chromecast</string>
++</resources>
+diff --git a/launcher/app/src/main/res/values/strings_meu.xml b/launcher/app/src/main/res/values/strings_meu.xml
+new file mode 100644
+index 0000000..4c1ad75
+--- /dev/null
++++ b/launcher/app/src/main/res/values/strings_meu.xml
+@@ -0,0 +1,28 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- meu-chromecast fork: texts of the Theme and Options panels. Own file, so upstream string edits never conflict. -->
++<resources>
++    <string name="meu_theme">Theme</string>
++    <string name="meu_options">Options</string>
++    <string name="meu_section_cards">Cards</string>
++    <string name="meu_section_background">Background</string>
++    <string name="meu_section_options">Options</string>
++    <string name="meu_cards_classic">Classic</string>
++    <string name="meu_cards_night">Night</string>
++    <string name="meu_cards_glass">Glass</string>
++    <string name="meu_bg_sky">Sky</string>
++    <string name="meu_bg_graphite">Graphite</string>
++    <string name="meu_bg_midnight">Midnight</string>
++    <string name="meu_opt_greeting">Greeting</string>
++    <string name="meu_opt_big_clock">Big clock</string>
++    <string name="meu_opt_small_clock">Small clock</string>
++    <string name="meu_opt_date">Date</string>
++    <string name="meu_opt_bigger_cards">Bigger cards</string>
++    <string name="meu_opt_header_temperature">Temperature in header</string>
++    <string name="meu_opt_weather_line">Weather line above cards</string>
++    <string name="meu_weather_rain">It\'s raining, %1$d°</string>
++    <string name="meu_weather_hot">It\'s hot today, %1$d°</string>
++    <string name="meu_weather_pleasant">It\'s pleasant out, %1$d°</string>
++    <string name="meu_weather_cool">It\'s a bit cool, %1$d°</string>
++    <string name="meu_weather_cold">It\'s cold today, %1$d°</string>
++    <string name="meu_device_settings">Chromecast settings</string>
++</resources>
+diff --git a/launcher/app/src/test/java/com/gathin/tvhome/HomeLookTest.java b/launcher/app/src/test/java/com/gathin/tvhome/HomeLookTest.java
+new file mode 100644
+index 0000000..b11c93a
+--- /dev/null
++++ b/launcher/app/src/test/java/com/gathin/tvhome/HomeLookTest.java
+@@ -0,0 +1,156 @@
++package com.gathin.tvhome;
++
++import org.junit.Test;
++
++import java.util.HashMap;
++import java.util.Map;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertTrue;
++
++public class HomeLookTest {
++    private static HomeLook look(Object... keyValues) {
++        Map<String, Object> saved = new HashMap<>();
++        for (int i = 0; i < keyValues.length; i += 2) saved.put((String) keyValues[i], keyValues[i + 1]);
++        return HomeLook.from(saved);
++    }
++
++    // deve usar os padrões da especificação numa instalação nova
++    @Test public void aFreshInstallUsesTheSpecDefaults() {
++        HomeLook l = look();
++        assertEquals(HomeLook.Cards.CLASSIC, l.cards);
++        assertEquals(HomeLook.Background.SKY, l.background);
++        assertTrue(l.greeting);
++        assertFalse(l.bigClock);
++        assertTrue(l.smallClock);
++        assertTrue(l.date);
++        assertFalse(l.biggerCards);
++        assertFalse(l.headerTemperature);
++        assertTrue(l.weatherLine);
++    }
++
++    // deve ler os interruptores de temperatura sem alterar os outros
++    @Test public void temperatureSwitchesAreIndependent() {
++        HomeLook l = look(HomeLook.KEY_HEADER_TEMPERATURE, true, HomeLook.KEY_WEATHER_LINE, false);
++        assertTrue(l.headerTemperature);
++        assertFalse(l.weatherLine);
++        assertTrue(l.greeting);
++        HomeLook after = l.with(HomeLook.KEY_WEATHER_LINE, true);
++        assertTrue(after.weatherLine);
++        assertTrue(after.headerTemperature);
++    }
++
++    // deve ler cada escolha salva de forma independente
++    @Test public void readsEverySavedChoiceIndependently() {
++        HomeLook l = look(HomeLook.KEY_CARDS, "night", HomeLook.KEY_BACKGROUND, "midnight",
++                HomeLook.KEY_GREETING, false, HomeLook.KEY_BIG_CLOCK, true, HomeLook.KEY_SMALL_CLOCK, false,
++                HomeLook.KEY_DATE, false, HomeLook.KEY_BIGGER_CARDS, true);
++        assertEquals(HomeLook.Cards.NIGHT, l.cards);
++        assertEquals(HomeLook.Background.MIDNIGHT, l.background);
++        assertFalse(l.greeting);
++        assertTrue(l.bigClock);
++        assertFalse(l.smallClock);
++        assertFalse(l.date);
++        assertTrue(l.biggerCards);
++    }
++
++    // deve voltar ao padrão quando o valor salvo é desconhecido ou de outro tipo
++    @Test public void anUnknownOrBadlyTypedValueFallsBackToTheDefault() {
++        HomeLook l = look(HomeLook.KEY_CARDS, "neon", HomeLook.KEY_BACKGROUND, 3, HomeLook.KEY_GREETING, "yes");
++        assertEquals(HomeLook.Cards.CLASSIC, l.cards);
++        assertEquals(HomeLook.Background.SKY, l.background);
++        assertTrue(l.greeting);
++    }
++
++    // deve gravar e reler as escolhas sem perder nada
++    @Test public void savedValuesRoundTrip() {
++        HomeLook l = look(HomeLook.KEY_CARDS, "glass", HomeLook.KEY_BACKGROUND, "graphite", HomeLook.KEY_DATE, false);
++        assertEquals(l.cards, HomeLook.from(l.toMap()).cards);
++        assertEquals(l.background, HomeLook.from(l.toMap()).background);
++        assertEquals(l.date, HomeLook.from(l.toMap()).date);
++    }
++
++    // deve trocar um único item sem alterar os outros
++    @Test public void changingOneChoiceLeavesTheOthersAlone() {
++        HomeLook before = look(HomeLook.KEY_CARDS, "night", HomeLook.KEY_BIG_CLOCK, true);
++        HomeLook after = before.with(HomeLook.KEY_GREETING, false);
++        assertFalse(after.greeting);
++        assertEquals(HomeLook.Cards.NIGHT, after.cards);
++        assertTrue(after.bigClock);
++        assertTrue(after.smallClock);
++    }
++
++    // deve esconder o título grande do app fora do estilo Classic
++    @Test public void onlyClassicShowsTheBigAppTitle() {
++        assertTrue(look().showsHeroTitle(true));
++        assertFalse(look().showsHeroTitle(false));
++        assertFalse(look(HomeLook.KEY_CARDS, "night").showsHeroTitle(true));
++        assertFalse(look(HomeLook.KEY_CARDS, "glass").showsHeroTitle(true));
++    }
++
++    // deve desligar o brilho de fundo no Noite e no fundo Grafite
++    @Test public void nightAndGraphiteHaveNoAmbientGlow() {
++        assertTrue(look().ambientGlow(true));
++        assertFalse(look().ambientGlow(false));
++        assertFalse(look(HomeLook.KEY_CARDS, "night").ambientGlow(true));
++        assertFalse(look(HomeLook.KEY_BACKGROUND, "graphite").ambientGlow(true));
++        assertTrue(look(HomeLook.KEY_BACKGROUND, "midnight").ambientGlow(true));
++    }
++
++    // deve usar brilho mais fraco no fundo Meia-noite
++    @Test public void midnightGlowIsSofterThanSky() {
++        assertTrue(HomeLook.Background.MIDNIGHT.glowStrength < HomeLook.Background.SKY.glowStrength);
++        assertEquals(1f, HomeLook.Background.SKY.glowStrength, 0.001f);
++    }
++
++    // deve usar contorno cinza no Noite e no Vidro e manter o do launcher no Classic
++    @Test public void nightAndGlassUseTheGreyRing() {
++        assertEquals(0, look().focusRingColor());
++        assertEquals(0xFFA8A8B0, look(HomeLook.KEY_CARDS, "night").focusRingColor());
++        assertEquals(0xFFA8A8B0, look(HomeLook.KEY_CARDS, "glass").focusRingColor());
++    }
++
++    // deve calcular o contraste no padrão WCAG
++    @Test public void contrastFollowsWcag() {
++        assertEquals(21.0, HomeLook.contrast(0xFFFFFFFF, 0xFF000000), 0.01);
++        assertEquals(1.0, HomeLook.contrast(0xFF777777, 0xFF777777), 0.01);
++    }
++
++    // deve gerar tons escuros em que o nome do app fica legível
++    @Test public void nightToneKeepsTheNameReadable() {
++        int[] vivid = {0xFFE53935, 0xFF4A6CF7, 0xFFF07A25, 0xFF7C4DFF, 0xFFFFFFFF, 0xFF000000, 0xFF20C997, 0xFFFFEB3B};
++        for (int c : vivid) {
++            int tone = HomeLook.nightTone(c);
++            assertTrue(Integer.toHexString(c), HomeLook.contrast(tone, HomeLook.NIGHT_NAME) >= 4.5);
++            assertTrue(Integer.toHexString(c), HomeLook.luminance(tone) < 0.08);
++        }
++    }
++
++    // deve manter a cor dominante do app no tom escuro
++    @Test public void nightToneKeepsTheHue() {
++        int red = HomeLook.nightTone(0xFFE53935);
++        assertTrue(((red >> 16) & 0xFF) > (red & 0xFF));
++        int blue = HomeLook.nightTone(0xFF4A6CF7);
++        assertTrue((blue & 0xFF) > ((blue >> 16) & 0xFF));
++    }
++
++    // deve montar a linha pequena só com os itens ligados e "·" entre eles
++    @Test public void smallLineJoinsOnlyTheVisibleParts() {
++        assertEquals("h:mm a '·' EEEE d MMMM", HomeLook.smallLinePattern("h:mm a", "EEEE d MMMM", true, true));
++        assertEquals("h:mm a", HomeLook.smallLinePattern("h:mm a", "EEEE d MMMM", true, false));
++        assertEquals("EEEE d MMMM", HomeLook.smallLinePattern("h:mm a", "EEEE d MMMM", false, true));
++        assertEquals("", HomeLook.smallLinePattern("h:mm a", "EEEE d MMMM", false, false));
++    }
++
++    // deve aumentar os cards maiores sem passar do espaço da coluna
++    @Test public void biggerCardsGrowButStayInsideTheCell() {
++        float density = 2f;
++        int normal = AppAdapter.tileWidthPx(1660, 4, density);
++        int bigger = HomeLook.boostedTileWidthPx(normal, 1740, 4, density, 1.1f);
++        assertTrue(bigger > normal);
++        int cell = 1740 / 4;
++        assertTrue(bigger * AppAdapter.FOCUS_SCALE <= cell - 8 * density + 1);
++        assertEquals(normal, HomeLook.boostedTileWidthPx(normal, 1740, 4, density, 1f));
++    }
++}
+diff --git a/launcher/app/src/test/java/com/gathin/tvhome/IconInkTest.java b/launcher/app/src/test/java/com/gathin/tvhome/IconInkTest.java
+new file mode 100644
+index 0000000..bc3ec91
+--- /dev/null
++++ b/launcher/app/src/test/java/com/gathin/tvhome/IconInkTest.java
+@@ -0,0 +1,125 @@
++package com.gathin.tvhome;
++
++import org.junit.Test;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertTrue;
++
++public class IconInkTest {
++    private static final int N = 20;
++
++    /** A square icon: {@code bg} everywhere, {@code ink} in the centre block, transparent outside {@code inset}. */
++    private static int[] icon(int bg, int ink, int inset) {
++        int[] px = new int[N * N];
++        for (int y = 0; y < N; y++) {
++            for (int x = 0; x < N; x++) {
++                boolean outside = x < inset || y < inset || x >= N - inset || y >= N - inset;
++                boolean centre = x >= 7 && x < 13 && y >= 7 && y < 13;
++                px[y * N + x] = outside ? 0 : centre ? ink : bg;
++            }
++        }
++        return px;
++    }
++
++    private static int at(int[] a, int x, int y) {
++        return a[y * N + x];
++    }
++
++    // deve manter só o desenho quando o fundo do ícone já é transparente
++    @Test public void aTransparentBackgroundKeepsTheGlyphAsIs() {
++        int[] alpha = IconInk.alpha(icon(0x00000000, 0xFFE53935, 0), N, N);
++        assertEquals(255, at(alpha, 10, 10));
++        assertEquals(0, at(alpha, 3, 3));
++    }
++
++    // deve remover o quadrado branco e manter o desenho escuro
++    @Test public void removesAWhiteSquareAndKeepsADarkGlyph() {
++        int[] alpha = IconInk.alpha(icon(0xFFFFFFFF, 0xFF202020, 1), N, N);
++        assertEquals(255, at(alpha, 10, 10));
++        assertEquals(0, at(alpha, 4, 4));
++        assertEquals(0, at(alpha, 0, 0));
++    }
++
++    // deve remover o quadrado escuro e manter o desenho claro
++    @Test public void removesADarkSquareAndKeepsALightGlyph() {
++        int[] alpha = IconInk.alpha(icon(0xFF2A2A2A, 0xFFFFFFFF, 1), N, N);
++        assertEquals(255, at(alpha, 10, 10));
++        assertEquals(0, at(alpha, 4, 4));
++    }
++
++    // deve reconhecer o fundo sólido pela borda interna do ícone
++    @Test public void findsASolidBackgroundOnTheInnerRing() {
++        assertEquals(0xFFFFFFFF, IconInk.background(icon(0xFFFFFFFF, 0xFF000000, 1), N, N));
++        assertEquals(0, IconInk.background(icon(0x00000000, 0xFF000000, 0), N, N));
++    }
++
++    // deve reconhecer o fundo mesmo quando o desenho encosta em parte da borda interna
++    @Test public void findsTheBackgroundWhenTheGlyphTouchesPartOfTheRing() {
++        int[] px = icon(0xFFFFFFFF, 0xFF3050C0, 1);
++        for (int y = 2; y < 18; y++) px[y * N + 3] = 0xFFE8622C;   // a logo stroke across the left of the ring
++        assertEquals(0xFFFFFFFF, IconInk.background(px, N, N));
++        int[] alpha = IconInk.alpha(px, N, N);
++        assertEquals(0, at(alpha, 15, 15));
++        assertEquals(255, at(alpha, 3, 10));
++    }
++
++    // deve achar o fundo branco de um ícone cujo logo circular ocupa quase todo o quadrado (UniTV)
++    @Test public void findsTheBackgroundBehindALogoThatFillsMostOfTheIcon() {
++        int[] px = icon(0xFFFFFFFF, 0xFFFFFFFF, 0);
++        for (int y = 0; y < N; y++) {
++            for (int x = 0; x < N; x++) {
++                double r = Math.hypot(x - 9.5, y - 9.5);
++                if (r >= 6 && r <= 8) px[y * N + x] = 0xFFE8622C;
++            }
++        }
++        assertEquals(0xFFFFFFFF, IconInk.background(px, N, N));
++        int[] alpha = IconInk.alpha(px, N, N);
++        assertEquals(0, at(alpha, 0, 0));
++        assertEquals(0, at(alpha, 10, 10));
++        assertEquals(255, at(alpha, 17, 10));
++    }
++
++    // deve tratar fundo com várias cores como transparente e não apagar o desenho
++    @Test public void aBusyBackgroundIsNotRemoved() {
++        int[] px = icon(0xFFFFFFFF, 0xFF000000, 0);
++        int[] stripes = {0xFF0000FF, 0xFFFF0000, 0xFF00C000, 0xFFFFFF00};
++        for (int y = 0; y < N; y++) {
++            for (int x = 0; x < N; x++) if (px[y * N + x] != 0xFF000000) px[y * N + x] = stripes[x / 5];
++        }
++        assertEquals(0, IconInk.background(px, N, N));
++        int[] alpha = IconInk.alpha(px, N, N);
++        assertTrue(at(alpha, 10, 10) > 0);
++    }
++
++    // deve achar a área que o desenho ocupa, ignorando a margem transparente
++    @Test public void findsTheBoundsOfTheDrawing() {
++        int[] alpha = new int[N * N];
++        for (int y = 5; y < 12; y++) for (int x = 8; x < 11; x++) alpha[y * N + x] = 255;
++        alpha[0] = 10;   // a faint speck does not count
++        assertEquals(java.util.Arrays.toString(new int[]{8, 5, 10, 11}),
++                java.util.Arrays.toString(IconInk.bounds(alpha, N, N)));
++        assertEquals(null, IconInk.bounds(new int[N * N], N, N));
++    }
++
++    // deve encaixar desenhos de tamanhos diferentes na mesma caixa, centralizados e sem distorcer
++    @Test public void fitsEveryDrawingToTheSameBoxKeepingItsShape() {
++        float[] wide = IconInk.fit(new int[]{0, 0, 99, 49}, 144, 0.7f);
++        float[] tall = IconInk.fit(new int[]{10, 10, 29, 69}, 144, 0.7f);
++        // a maior dimensão vira 70% da caixa nos dois
++        assertEquals(144 * 0.7f, wide[2] - wide[0], 0.5f);
++        assertEquals(144 * 0.7f, tall[3] - tall[1], 0.5f);
++        // proporção mantida
++        assertEquals(2f, (wide[2] - wide[0]) / (wide[3] - wide[1]), 0.05f);
++        // centralizado
++        assertEquals(72f, (tall[0] + tall[2]) / 2, 0.5f);
++        assertEquals(72f, (wide[1] + wide[3]) / 2, 0.5f);
++    }
++
++    // deve gerar o desenho numa cor só, com a transparência da máscara
++    @Test public void paintsTheMaskInOneColour() {
++        int[] out = IconInk.paint(new int[]{255, 0, 128}, 0xFFC8C8CC);
++        assertEquals(0xFFC8C8CC, out[0]);
++        assertEquals(0x00C8C8CC, out[1]);
++        assertEquals(0x80C8C8CC, out[2]);
++    }
++}
+diff --git a/launcher/app/src/test/java/com/gathin/tvhome/WeatherNowTest.java b/launcher/app/src/test/java/com/gathin/tvhome/WeatherNowTest.java
+new file mode 100644
+index 0000000..4fcbdb1
+--- /dev/null
++++ b/launcher/app/src/test/java/com/gathin/tvhome/WeatherNowTest.java
+@@ -0,0 +1,84 @@
++package com.gathin.tvhome;
++
++import org.junit.Test;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertFalse;
++import static org.junit.Assert.assertNull;
++import static org.junit.Assert.assertTrue;
++
++public class WeatherNowTest {
++    private static final String RESPONSE = "{\"latitude\":-23.55,\"longitude\":-46.63,\"current_units\":{\"time\":\"iso8601\","
++            + "\"temperature_2m\":\"°C\"},\"current\":{\"time\":\"2026-10-23T05:45\",\"interval\":900,"
++            + "\"temperature_2m\":17.6,\"weather_code\":3,\"is_day\":0}}";
++
++    // deve ler temperatura, código do tempo e dia/noite da resposta da Open-Meteo
++    @Test public void readsTheCurrentBlockOfAnOpenMeteoResponse() {
++        WeatherNow w = WeatherNow.parse(RESPONSE, 1000L);
++        assertEquals(18, w.temperature);
++        assertEquals(3, w.code);
++        assertFalse(w.day);
++        assertEquals(1000L, w.fetchedAt);
++    }
++
++    // deve arredondar temperaturas negativas e decimais
++    @Test public void roundsNegativeAndDecimalTemperatures() {
++        assertEquals(-2, WeatherNow.parse(RESPONSE.replace("17.6", "-2.4"), 0).temperature);
++        assertEquals(31, WeatherNow.parse(RESPONSE.replace("17.6", "30.5"), 0).temperature);
++    }
++
++    // deve ignorar resposta vazia, de erro ou sem o bloco atual
++    @Test public void ignoresAnEmptyErrorOrIncompleteResponse() {
++        assertNull(WeatherNow.parse(null, 0));
++        assertNull(WeatherNow.parse("", 0));
++        assertNull(WeatherNow.parse("{\"error\":true,\"reason\":\"Invalid\"}", 0));
++        assertNull(WeatherNow.parse(RESPONSE.replace("\"weather_code\":3,", ""), 0));
++    }
++
++    // deve considerar o dado válido por até 2 horas
++    @Test public void aReadingStaysFreshForTwoHours() {
++        WeatherNow w = WeatherNow.parse(RESPONSE, 0);
++        assertTrue(w.fresh(2 * 60 * 60 * 1000L));
++        assertFalse(w.fresh(2 * 60 * 60 * 1000L + 1));
++        assertFalse(w.fresh(-1));
++    }
++
++    // deve escolher o ícone pela condição e pelo período do dia
++    @Test public void picksTheIconFromTheCodeAndTheTimeOfDay() {
++        assertEquals(WeatherNow.Icon.SUN, WeatherNow.icon(0, true));
++        assertEquals(WeatherNow.Icon.MOON, WeatherNow.icon(0, false));
++        assertEquals(WeatherNow.Icon.CLOUD_SUN, WeatherNow.icon(2, true));
++        assertEquals(WeatherNow.Icon.CLOUD_MOON, WeatherNow.icon(1, false));
++        assertEquals(WeatherNow.Icon.CLOUD, WeatherNow.icon(3, true));
++        assertEquals(WeatherNow.Icon.FOG, WeatherNow.icon(45, true));
++        assertEquals(WeatherNow.Icon.RAIN, WeatherNow.icon(61, false));
++        assertEquals(WeatherNow.Icon.RAIN, WeatherNow.icon(81, true));
++        assertEquals(WeatherNow.Icon.STORM, WeatherNow.icon(95, true));
++        assertEquals(WeatherNow.Icon.CLOUD, WeatherNow.icon(73, true));
++        assertEquals(WeatherNow.Icon.CLOUD, WeatherNow.icon(999, true));
++    }
++
++    // deve tratar garoa, chuva, pancadas e tempestade como chuva
++    @Test public void drizzleRainShowersAndStormsCountAsRain() {
++        for (int code : new int[]{51, 55, 61, 65, 67, 80, 82, 95, 99}) assertTrue(String.valueOf(code), WeatherNow.raining(code));
++        for (int code : new int[]{0, 1, 3, 45, 71, 86}) assertFalse(String.valueOf(code), WeatherNow.raining(code));
++    }
++
++    // deve escolher a faixa da frase pelos limites 13, 20 e 28 graus, com chuva tendo prioridade
++    @Test public void phraseBandsFollowTheSpecLimits() {
++        assertEquals(WeatherNow.Band.COLD, WeatherNow.band(12, false));
++        assertEquals(WeatherNow.Band.COOL, WeatherNow.band(13, false));
++        assertEquals(WeatherNow.Band.COOL, WeatherNow.band(19, false));
++        assertEquals(WeatherNow.Band.PLEASANT, WeatherNow.band(20, false));
++        assertEquals(WeatherNow.Band.PLEASANT, WeatherNow.band(27, false));
++        assertEquals(WeatherNow.Band.HOT, WeatherNow.band(28, false));
++        assertEquals(WeatherNow.Band.RAIN, WeatherNow.band(31, true));
++    }
++
++    // deve pedir só os três campos atuais, com a posição arredondada a ~1 km
++    @Test public void theRequestAsksOnlyForTheCurrentFieldsAtARoundedPosition() {
++        String url = WeatherNow.requestUrl(-23.550520, -46.633308);
++        assertEquals("https://api.open-meteo.com/v1/forecast?latitude=-23.55&longitude=-46.63"
++                + "&current=temperature_2m,weather_code,is_day", url);
++    }
++}

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="meu_theme">Tema</string>
+    <string name="meu_options">Opções</string>
+    <string name="meu_section_cards">Cards</string>
+    <string name="meu_section_background">Fundo</string>
+    <string name="meu_section_options">Opções</string>
+    <string name="meu_cards_classic">Clássico</string>
+    <string name="meu_cards_night">Noite</string>
+    <string name="meu_cards_glass">Vidro</string>
+    <string name="meu_bg_sky">Céu</string>
+    <string name="meu_bg_graphite">Grafite</string>
+    <string name="meu_bg_midnight">Meia-noite</string>
+    <string name="meu_opt_greeting">Saudação</string>
+    <string name="meu_opt_big_clock">Relógio grande</string>
+    <string name="meu_opt_small_clock">Relógio pequeno</string>
+    <string name="meu_opt_date">Data</string>
+    <string name="meu_opt_bigger_cards">Cards maiores</string>
+    <string name="meu_opt_header_temperature">Temperatura no cabeçalho</string>
+    <string name="meu_opt_weather_line">Frase do tempo acima dos cards</string>
+    <string name="meu_weather_rain">Está chovendo, %1$d°</string>
+    <string name="meu_weather_hot">Hoje está calor, %1$d°</string>
+    <string name="meu_weather_pleasant">O tempo está agradável, %1$d°</string>
+    <string name="meu_weather_cool">Está fresquinho, %1$d°</string>
+    <string name="meu_weather_cold">Hoje está frio, %1$d°</string>
+    <string name="meu_device_settings">Configurações do Chromecast</string>
+</resources>

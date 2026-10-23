@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- meu-chromecast fork: texts of the Theme and Options panels. Own file, so upstream string edits never conflict. -->
+<resources>
+    <string name="meu_theme">Theme</string>
+    <string name="meu_options">Options</string>
+    <string name="meu_section_cards">Cards</string>
+    <string name="meu_section_background">Background</string>
+    <string name="meu_section_options">Options</string>
+    <string name="meu_cards_classic">Classic</string>
+    <string name="meu_cards_night">Night</string>
+    <string name="meu_cards_glass">Glass</string>
+    <string name="meu_bg_sky">Sky</string>
+    <string name="meu_bg_graphite">Graphite</string>
+    <string name="meu_bg_midnight">Midnight</string>
+    <string name="meu_opt_greeting">Greeting</string>
+    <string name="meu_opt_big_clock">Big clock</string>
+    <string name="meu_opt_small_clock">Small clock</string>
+    <string name="meu_opt_date">Date</string>
+    <string name="meu_opt_bigger_cards">Bigger cards</string>
+    <string name="meu_opt_header_temperature">Temperature in header</string>
+    <string name="meu_opt_weather_line">Weather line above cards</string>
+    <string name="meu_weather_rain">It\'s raining, %1$d°</string>
+    <string name="meu_weather_hot">It\'s hot today, %1$d°</string>
+    <string name="meu_weather_pleasant">It\'s pleasant out, %1$d°</string>
+    <string name="meu_weather_cool">It\'s a bit cool, %1$d°</string>
+    <string name="meu_weather_cold">It\'s cold today, %1$d°</string>
+    <string name="meu_device_settings">Chromecast settings</string>
+</resources>

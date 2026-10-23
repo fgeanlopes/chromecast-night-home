@@ -1,0 +1,3 @@
+# Chromecast 4K (sabrina): etapa do launcher novo. Desativa o setup wizard para o novo launcher assumir o Home.
+# Quebra o Cast do celular até reativar o setupwraith (ver debloat.txt, quirks). launcherx é tratado pelo build-and-install.sh.
+com.google.android.tungsten.setupwraith
